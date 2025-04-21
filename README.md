@@ -29,6 +29,7 @@ Yet to be created
 --- 
 
 Code editor: Neovim + custom config 
+
 Terminal: i3 on LInux Mint
 
 ---
