@@ -1,17 +1,18 @@
 import numpy as np
 import matplotlib.pyplot as plt
-from matplotlib.widgets import Slider, Button
+from matplotlib.widgets import Slider, Button, RadioButtons
 from scipy.interpolate import interp1d
+from scipy.signal import square, sawtooth
 from typing import Tuple
 import numpy.typing as npt
 
 
 def generate_signal(
-    frequency: float, sampling_rate: float, duration: float = 1.0
+    frequency: float, sampling_rate: float, duration: float = 1.0, signal_type: str = 'sin'
 ) -> Tuple[npt.NDArray[np.float64], npt.NDArray[np.float64],
            npt.NDArray[np.float64], npt.NDArray[np.float64]]:
     """
-    Generuje ciągły i próbkowany sygnał sinusoidalny.
+    Generuje ciągły i próbkowany sygnał: sinus, prostokątny lub trójkątny.
 
     Returns:
         t: Oś czasu sygnału ciągłego
@@ -20,42 +21,58 @@ def generate_signal(
         samples: Próbkowane wartości sygnału
     """
     t = np.linspace(0, duration, 1000)
-    signal = np.sin(2 * np.pi * frequency * t)
-
     t_samples = np.arange(0, duration, 1 / sampling_rate)
-    samples = np.sin(2 * np.pi * frequency * t_samples)
+
+    if signal_type == 'sin':
+        signal = np.sin(2 * np.pi * frequency * t)
+        samples = np.sin(2 * np.pi * frequency * t_samples)
+    elif signal_type == 'square':
+        signal = square(2 * np.pi * frequency * t)
+        samples = square(2 * np.pi * frequency * t_samples)
+    elif signal_type == 'triangle':
+        signal = sawtooth(2 * np.pi * frequency * t, width=0.5)
+        samples = sawtooth(2 * np.pi * frequency * t_samples, width=0.5)
+    else:
+        raise ValueError(f"Nieznany typ sygnału: {signal_type}")
 
     return t, signal, t_samples, samples
 
 
 def plot_signal_with_sliders() -> None:
     """
-    Uruchamia wykres z suwakami do wyboru częstotliwości i częstotliwości próbkowania.
+    Zadanie 1: Wykres z suwakami częstotliwości i próbkowania oraz wyborem typu sygnału.
     """
     init_f = 5.0
     init_fs = 20.0
+    init_signal_type = 'sin'
     duration = 1.0
 
-    t, signal, t_samples, samples = generate_signal(init_f, init_fs, duration)
+    t, signal, t_samples, samples = generate_signal(init_f, init_fs, duration, init_signal_type)
 
     fig, ax = plt.subplots()
-    plt.subplots_adjust(left=0.25, bottom=0.35)
+    plt.subplots_adjust(left=0.35, bottom=0.35)
     l1, = ax.plot(t, signal, label='Sygnał ciągły')
     l2, = ax.plot(t_samples, samples, 'o', label='Próbki')
     ax.set_title('Sygnał i próbki')
     ax.legend()
     ax.grid(True)
 
-    ax_f = plt.axes([0.25, 0.2, 0.65, 0.03])
-    ax_fs = plt.axes([0.25, 0.15, 0.65, 0.03])
+    ax_f = plt.axes([0.35, 0.25, 0.55, 0.03])
+    ax_fs = plt.axes([0.35, 0.2, 0.55, 0.03])
 
     s_f = Slider(ax_f, 'f [Hz]', 1, 50, valinit=init_f)
     s_fs = Slider(ax_fs, 'fs [Hz]', 5, 100, valinit=init_fs)
 
-    def update(val: float) -> None:
+    radio_ax = plt.axes([0.05, 0.5, 0.2, 0.15], facecolor='lightgoldenrodyellow')
+    radio = RadioButtons(radio_ax, ('sin', 'square', 'triangle'))
+
+    current_signal_type = [init_signal_type]
+
+    def update(val: float = None) -> None:
         f = s_f.val
         fs = s_fs.val
-        t, signal, t_samples, samples = generate_signal(f, fs, duration)
+        signal_type = current_signal_type[0]
+        t, signal, t_samples, samples = generate_signal(f, fs, duration, signal_type)
         l1.set_ydata(signal)
         l2.set_xdata(t_samples)
         l2.set_ydata(samples)
@@ -64,9 +81,15 @@ def plot_signal_with_sliders() -> None:
     s_f.on_changed(update)
     s_fs.on_changed(update)
 
+    def change_signal_type(label: str) -> None:
+        current_signal_type[0] = label
+        update()
+
+    radio.on_clicked(change_signal_type)
+
     def proceed(event: object) -> None:
         plt.close()
-        zadanie2(s_f.val, s_fs.val)
+        zadanie2(s_f.val, s_fs.val, current_signal_type[0])
 
     button_ax = plt.axes([0.8, 0.025, 0.1, 0.04])
     button = Button(button_ax, 'Dalej', color='lightblue', hovercolor='skyblue')
@@ -75,16 +98,29 @@ def plot_signal_with_sliders() -> None:
     plt.show()
 
 
-def zadanie2(frequency: float, sampling_rate: float) -> None:
+def zadanie2(frequency: float, sampling_rate: float, signal_type: str) -> None:
     """
-    Wykonuje interpolację liniową na podstawie danych z zadania 1.
+    Zadanie 2: Interpolacja liniowa sygnału.
     """
     duration = 1.0
     t_full = np.linspace(0, duration, 1000)
-    signal_full = np.sin(2 * np.pi * frequency * t_full)
+
+    if signal_type == 'sin':
+        signal_full = np.sin(2 * np.pi * frequency * t_full)
+    elif signal_type == 'square':
+        signal_full = square(2 * np.pi * frequency * t_full)
+    elif signal_type == 'triangle':
+        signal_full = sawtooth(2 * np.pi * frequency * t_full, width=0.5)
+    else:
+        raise ValueError(f"Nieznany typ sygnału: {signal_type}")
 
     t_samples = np.arange(0, duration, 1 / sampling_rate)
-    samples = np.sin(2 * np.pi * frequency * t_samples)
+    if signal_type == 'sin':
+        samples = np.sin(2 * np.pi * frequency * t_samples)
+    elif signal_type == 'square':
+        samples = square(2 * np.pi * frequency * t_samples)
+    elif signal_type == 'triangle':
+        samples = sawtooth(2 * np.pi * frequency * t_samples, width=0.5)
 
     interp_func = interp1d(t_samples, samples, kind='linear', fill_value='extrapolate')
     interpolated = interp_func(t_full)
@@ -106,20 +142,33 @@ def zadanie2(frequency: float, sampling_rate: float) -> None:
     plt.tight_layout()
     plt.show()
 
-    zadanie3(frequency, sampling_rate)
+    zadanie3(frequency, sampling_rate, signal_type)
 
 
-def zadanie3(frequency: float, sampling_rate: float) -> None:
+def zadanie3(frequency: float, sampling_rate: float, signal_type: str) -> None:
     """
-    Interpolacja sygnału na podstawie równania Whittakera–Shannona.
+    Zadanie 3: Interpolacja sygnału wg. Whittakera–Shannona.
     """
     duration = 1.0
     t_full = np.linspace(0, duration, 1000)
-    signal_full = np.sin(2 * np.pi * frequency * t_full)
+
+    if signal_type == 'sin':
+        signal_full = np.sin(2 * np.pi * frequency * t_full)
+    elif signal_type == 'square':
+        signal_full = square(2 * np.pi * frequency * t_full)
+    elif signal_type == 'triangle':
+        signal_full = sawtooth(2 * np.pi * frequency * t_full, width=0.5)
+    else:
+        raise ValueError(f"Nieznany typ sygnału: {signal_type}")
 
     T = 1 / sampling_rate
     t_samples = np.arange(0, duration, T)
-    samples = np.sin(2 * np.pi * frequency * t_samples)
+    if signal_type == 'sin':
+        samples = np.sin(2 * np.pi * frequency * t_samples)
+    elif signal_type == 'square':
+        samples = square(2 * np.pi * frequency * t_samples)
+    elif signal_type == 'triangle':
+        samples = sawtooth(2 * np.pi * frequency * t_samples, width=0.5)
 
     def whittaker_shannon(t: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
         reconstructed = np.zeros_like(t)
@@ -133,7 +182,7 @@ def zadanie3(frequency: float, sampling_rate: float) -> None:
     plt.figure(figsize=(10, 6))
     plt.subplot(2, 1, 1)
     plt.plot(t_full, signal_full, label='Sygnał oryginalny')
-    plt.plot(t_full, interpolated_ws, '--', label='Interpolacja Whittakera-Shannona')
+    plt.plot(t_full, interpolated_ws, '--', label='Interpolacja Whittakera–Shannona')
     plt.title('Interpolacja wg Whittakera–Shannona')
     plt.legend()
     plt.grid(True)
