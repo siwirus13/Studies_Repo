@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.widgets import Slider, RadioButtons
@@ -182,3 +183,6 @@ if __name__ == "__main__":
     zad5_window()
     plt.show()
 
+=======
+##Still to be done
+>>>>>>> 3d0b78cc2ddbb53d26d8602cb54784c7a13c522c
