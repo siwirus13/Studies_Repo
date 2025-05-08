@@ -7,6 +7,9 @@ from typing import Tuple
 import numpy.typing as npt
 
 
+import matplotlib
+matplotlib.use("TkAgg")
+
 def generate_signal(
     frequency: float, sampling_rate: float, duration: float = 1.0, signal_type: str = 'sin'
 ) -> Tuple[npt.NDArray[np.float64], npt.NDArray[np.float64],
@@ -94,6 +97,7 @@ def plot_signal_with_sliders() -> None:
     button_ax = plt.axes([0.8, 0.025, 0.1, 0.04])
     button = Button(button_ax, 'Dalej', color='lightblue', hovercolor='skyblue')
     button.on_clicked(proceed)
+    
 
     plt.show()
 
