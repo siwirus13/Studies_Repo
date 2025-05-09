@@ -175,11 +175,11 @@ def zad5_window():
     update()
 
 if __name__ == "__main__":
-    zad1_window()
-    zad2_window()
-    zad3_window()
-    zad4_window()
-    zad5_window()
+   # zad1_window()
+   # zad2_window()
+   # zad3_window()
+   # zad4_window()
+   # zad5_window()
     plt.show()
 
 
