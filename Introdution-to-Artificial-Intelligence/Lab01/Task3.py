@@ -8,6 +8,12 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 
+"""
+Citation:
+Cohen, G., Afshar, S., Tapson, J., & van Schaik, A. (2017). EMNIST: an extension of MNIST to handwritten letters. Retrieved from http://arxiv.org/abs/1702.05373
+"""
+
+
 # Load MNIST
 mnist = fetch_openml('mnist_784', version=1, as_frame=False)
 X, y = mnist.data, mnist.target.astype(np.uint8)
