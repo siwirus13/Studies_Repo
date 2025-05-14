@@ -1,36 +1,37 @@
 # Studies_Repo
 
-This repository consists of my projects, scripts and code snippets related to my academicstudies.
-It is not a complete library of my codes as I don't have a good habit of pushing everything, but everything rather recent should be here or should get here soon. 
+This repository consists of my projects, scripts and code snippets related to my academic studies.
+It is not a complete library of my codes as I don't have a good habit of pushing everything, but everything from my uni tasks should be here. 
 
-
-Projects here are written in:
-
-- Python
-- C / C++
-- SQL
-
-And cover different topics like:
-
-- Data Science
-- Machine Learning
-- Control Systems
-- Sorting Algoriths
-- and more!
-
+Files in each folder are familiar to other files due to the nature of uni lessons to which they are related.
 
 ---
 
 ## Structure
 
-Yet to be created
+```
+Studies_Repo/
+├── README.md
+├── Systems_Enginnering/
+│   ├── SEM4/
+|       ├── Methods_and_Tools_of_BigData/
+│           └── .py files and data...
+|       ├── Signals_and_Datastreams/
+│           └── .py files and data...
+|       ├── Introduction_to_Algorithms/
+│           └── .py files and data...
+├── Introduction_to_Artificial_Intelligence/
+│   └── .py files and data...
+
+```
+
 
 
 --- 
 
-Code editor: Neovim + custom config 
+Code editor: Neovim with personalized config 
 
-Terminal: i3 on LInux Mint
+Terminal: i3 on Linux Mint
 
 ---
 
