@@ -1,0 +1,44 @@
+import cv2
+import numpy as np
+import os
+
+input_image_path = "../digits_sample.jpeg"
+output_dir = "../dataset_task2"
+
+os.makedirs(output_dir, exist_ok=True)
+
+image = cv2.imread(input_image_path, cv2.IMREAD_GRAYSCALE)
+
+
+_, thresh = cv2.threshold(image, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+
+contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+bounding_boxes = [cv2.boundingRect(c) for c in contours]
+sorted_boxes = sorted(bounding_boxes, key=lambda b: (b[1] // 50, b[0]))  # sortowanie rzędami
+
+digit_id = 0
+
+for i, (x, y, w, h) in enumerate(sorted_boxes):
+    if w < 10 or h < 10:
+        continue  
+
+    digit = thresh[y:y+h, x:x+w]
+
+    size = max(w, h)
+    square = np.ones((size, size), dtype=np.uint8) * 0
+    if w > h:
+        pad = (w - h) // 2
+        square[pad:pad+h, 0:w] = digit
+    else:
+        pad = (h - w) // 2
+        square[0:h, pad:pad+w] = digit
+
+    resized = cv2.resize(square, (28, 28), interpolation=cv2.INTER_AREA)
+
+    output_path = os.path.join(output_dir, f"digit_{digit_id}.png")
+    cv2.imwrite(output_path, resized)
+    print(f"[OK] Zapisano: {output_path}")
+    digit_id += 1
+
+print(f"Gotowe! Wycięto {digit_id} cyfr i zapisano do folderu '{output_dir}'")
