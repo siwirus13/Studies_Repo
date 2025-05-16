@@ -1,4 +1,4 @@
-## TASKC1
+## TASK 1 
 
 
 import random
@@ -111,6 +111,5 @@ if __name__ == '__main__':
         print(f"Heuristic: {name}")
         solution, visited = astar(init, h)
         print(f"Solution length: {len(solution) - 1}")
-        print(f"States visited: {visited}")
         input("Press Enter to visualize solution...")
         visualize_solution(solution)
