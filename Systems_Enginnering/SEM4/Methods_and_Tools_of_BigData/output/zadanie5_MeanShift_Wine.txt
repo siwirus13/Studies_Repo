@@ -1,6 +1,0 @@
-Algorithm: zadanie5_MeanShift_Wine
-Number of clusters: 13
-Silhouette Score: 0.3862
-Calinski-Harabasz Score: 269.0451
-Davies-Bouldin Score: 0.7482
-PCA Variance Explained: 55.4%

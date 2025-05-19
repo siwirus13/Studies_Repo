@@ -1,6 +1,0 @@
-Algorithm: zadanie8_MeanShift_Medical
-Number of clusters: 13
-Silhouette Score: 0.1890
-Calinski-Harabasz Score: 141.8009
-Davies-Bouldin Score: 0.8316
-PCA Variance Explained: 55.2%

@@ -1,6 +1,0 @@
-Algorithm: zadanie7_Hierarchical_Diabetes
-Number of clusters: 2
-Silhouette Score: 0.4308
-Calinski-Harabasz Score: 454.2592
-Davies-Bouldin Score: 0.8751
-PCA Variance Explained: 55.2%

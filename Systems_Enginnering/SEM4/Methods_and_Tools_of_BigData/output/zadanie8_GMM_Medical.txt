@@ -1,6 +1,0 @@
-Algorithm: zadanie8_GMM_Medical
-Number of clusters: 3
-Silhouette Score: 0.3253
-Calinski-Harabasz Score: 302.4266
-Davies-Bouldin Score: 1.0064
-PCA Variance Explained: 55.2%
