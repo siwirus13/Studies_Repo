@@ -1,0 +1,6 @@
+Algorithm: zadanie8_KMeans_Medical
+Number of clusters: 3
+Silhouette Score: 0.3349
+Calinski-Harabasz Score: 363.5517
+Davies-Bouldin Score: 1.0262
+PCA Variance Explained: 55.2%

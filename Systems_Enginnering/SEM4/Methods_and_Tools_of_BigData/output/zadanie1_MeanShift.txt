@@ -1,0 +1,6 @@
+Algorithm: zadanie1_MeanShift
+Number of clusters: 99
+Silhouette Score: 0.2599
+Calinski-Harabasz Score: 3311.9892
+Davies-Bouldin Score: 0.5518
+PCA Variance Explained: 46.3%

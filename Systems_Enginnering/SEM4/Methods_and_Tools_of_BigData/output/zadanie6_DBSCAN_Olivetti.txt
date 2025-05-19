@@ -1,0 +1,6 @@
+Algorithm: zadanie6_DBSCAN_Olivetti
+Number of clusters: 28
+Silhouette Score: -0.3220
+Calinski-Harabasz Score: 3.8497
+Davies-Bouldin Score: 2.4834
+PCA Variance Explained: 39.2%

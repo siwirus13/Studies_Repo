@@ -1,0 +1,6 @@
+Algorithm: zadanie4_Agglomerative_Iris
+Number of clusters: 3
+Silhouette Score: 0.5111
+Calinski-Harabasz Score: 286.3287
+Davies-Bouldin Score: 0.7054
+PCA Variance Explained: 95.8%

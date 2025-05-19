@@ -1,0 +1,6 @@
+Algorithm: zadanie8_DBSCAN_Medical
+Number of clusters: 2
+Silhouette Score: 0.4245
+Calinski-Harabasz Score: 2.4967
+Davies-Bouldin Score: 3.9349
+PCA Variance Explained: 55.2%

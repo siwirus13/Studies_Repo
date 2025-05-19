@@ -1,0 +1,6 @@
+Algorithm: zadanie3_GMM_Wine
+Number of clusters: 3
+Silhouette Score: 0.5591
+Calinski-Harabasz Score: 340.9421
+Davies-Bouldin Score: 0.6019
+PCA Variance Explained: 55.4%

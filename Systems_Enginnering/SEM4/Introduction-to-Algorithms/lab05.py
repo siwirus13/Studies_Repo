@@ -3,6 +3,8 @@ import random
 import time
 import matplotlib.pyplot as plt
 from typing import List
+import os
+
 
 # Zadanie 1: Ciągi liczbowe
 def seq1_recursive(n):
@@ -108,27 +110,37 @@ def zadanie3():
     lst = list(map(int, input("Zadanie 3 — Podaj listę liczb (oddzielone spacjami): ").split()))
     print("Posortowana:", merge_sort(lst))
 
-# Zadanie 4: Najkrótsza ścieżka w grafie
-import os
+
+# Zadanie 4
+
 
 def load_graph(filepath):
-    # Sprawdź, czy plik istnieje przed jego otwarciem
+    """
+    Wczytuje graf z pliku. Plik powinien zawierać po jednej krawędzi na linię, np.:
+    A B
+    B C
+    C D
+    """
     if not os.path.exists(filepath):
-        print(f"Plik {filepath} nie istnieje.")
-        return None
-    
+        raise FileNotFoundError(f"Plik nie istnieje: {filepath}")
+
     graph = {}
-    with open(filepath, 'r') as file:
-        for line in file:
-            # Usuwamy ewentualne spacje z końca i początku linii oraz dzielimy na część przed i po ":"
-            parts = line.strip().split(":")
-            if len(parts) == 2:
-                node = parts[0].strip()
-                neighbors = parts[1].strip().split()
-                graph[node] = neighbors
-            else:
-                print(f"Niepoprawny format w linii: {line.strip()}")
+    with open(filepath, 'r', encoding='utf-8') as f:
+        for line in f:
+            parts = line.strip().split()
+            if len(parts) != 2:
+                continue  # Pomijamy błędne linie
+            a, b = parts[0].strip(), parts[1].strip()
+            if a not in graph:
+                graph[a] = []
+            if b not in graph:
+                graph[b] = []
+            graph[a].append(b)
+            graph[b].append(a)  # Graf nieskierowany
     return graph
+
+
+
 
 def shortest_path_recursive(graph, start, end, visited=None):
     if visited is None:
@@ -143,11 +155,22 @@ def shortest_path_recursive(graph, start, end, visited=None):
                 return [start] + path
     return None
 
+
 def zadanie4():
-    filename = input("Zadanie 4 — Podaj nazwę pliku z grafem: ")
-    graph = load_graph(filename)
-    start = input("Podaj wierzchołek startowy: ")
-    end = input("Podaj wierzchołek końcowy: ")
+    filepath = input("Zadanie 4 — Podaj ścieżkę do pliku z grafem: ").strip()
+    try:
+        graph = load_graph(filepath)
+    except FileNotFoundError as e:
+        print(e)
+        return
+
+    start = input("Podaj wierzchołek startowy: ").strip()
+    end = input("Podaj wierzchołek końcowy: ").strip()
+
+    if start not in graph or end not in graph:
+        print("Podane wierzchołki nie istnieją w grafie.")
+        return
+
     path = shortest_path_recursive(graph, start, end)
     if path:
         print("Najkrótsza ścieżka:", " -> ".join(path))
@@ -155,7 +178,11 @@ def zadanie4():
     else:
         print("Brak ścieżki.")
 
-# Zadanie 5: Wykresy czasów działania
+
+
+
+
+ #Zadanie 5: Wykresy czasów działania
 def measure_time(func, arg):
     start = time.time()
     func(arg)

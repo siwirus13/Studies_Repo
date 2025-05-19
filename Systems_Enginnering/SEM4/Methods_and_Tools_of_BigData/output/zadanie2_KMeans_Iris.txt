@@ -1,0 +1,6 @@
+Algorithm: zadanie2_KMeans_Iris
+Number of clusters: 3
+Silhouette Score: 0.5092
+Calinski-Harabasz Score: 293.8565
+Davies-Bouldin Score: 0.7099
+PCA Variance Explained: 95.8%
