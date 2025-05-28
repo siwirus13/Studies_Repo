@@ -111,5 +111,6 @@ if __name__ == '__main__':
         print(f"Heuristic: {name}")
         solution, visited = astar(init, h)
         print(f"Solution length: {len(solution) - 1}")
+        print(f"Visited states when solving: {visited}")
         input("Press Enter to visualize solution...")
         visualize_solution(solution)

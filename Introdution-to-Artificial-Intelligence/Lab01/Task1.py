@@ -3,6 +3,7 @@
 
 import numpy as np
 import matplotlib.pyplot as plt
+import matplotlib
 import seaborn as sns
 from sklearn.datasets import fetch_openml
 from sklearn.linear_model import LogisticRegression
@@ -10,6 +11,7 @@ from sklearn.metrics import accuracy_score, classification_report, confusion_mat
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
 
+matplotlib.use("TkAgg")
 
 """
 
