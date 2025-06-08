@@ -1,3 +1,4 @@
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
@@ -7,6 +8,36 @@
 #include <sys/socket.h>
 #include <unistd.h>
 #include <arpa/inet.h>
+
+/*
+ * HEURISTIC EVALUATION FUNCTION
+ * =====================================
+ *
+ * 1. WINNING/THREAT DETECTION (Primary):
+ *    - 4-in-a-row: ±100,000 (win/loss)
+ *    - 3-in-a-row: +10,000/-15,000 (prioritizes blocking opponent threats)
+ *    - 2-in-a-row: +1,000/-1,500
+ *
+ * 2. POSITION EVALUATION (Strategic):
+ *    - Center tile (33): -50,000 (MASSIVE penalty - center is "dead" in 5x5)
+ *    - Corners (11,15,51,55): +5,000 (maximum tactical flexibility)
+ *    - Near-center (22,24,42,44): +3,000
+ *    - Secondary positions: +1,500
+ *    - Edge positions: +800
+ *
+ * 3. PATTERN RECOGNITION (Advanced):
+ *    - X _ _ X spacing: +8,000 (creates multiple winning threats)
+ *    - Adjacent clustering: -5,000 per piece (prevents flexibility loss)
+ *
+ * PENALTIES TARGET:
+ * - Center occupation (-50,000): Strategic dead zone
+ * - Piece clustering (-5,000 each): Reduces tactical options
+ * - Opponent threats (-15,000): Defense prioritized over offense
+ * - Poor positioning: Non-strategic square placement
+ *
+ * MAIN STRATEGY: Avoid clustering, control corners/edges, create spacing patterns,
+ * block threats aggressively, maintain positional flexibility.
+ */
 
 #define SIZE 5
 
@@ -33,17 +64,15 @@ bool isMovesLeft() {
 
 // Check if placing a piece at (row, col) creates a winning line
 bool checkWinningMove(int row, int col, int player) {
-    board[row][col] = player; // Temporarily place the piece
+    board[row][col] = player; 
     
-    // Check all directions for 4 in a row
     int directions[4][2] = {{0,1}, {1,0}, {1,1}, {1,-1}};
     
     for (int d = 0; d < 4; d++) {
         int dx = directions[d][0];
         int dy = directions[d][1];
-        int count = 1; // Count the piece we just placed
-        
-        // Check positive direction
+        int count = 1;         
+      
         for (int i = 1; i < 4; i++) {
             int nr = row + i * dx;
             int nc = col + i * dy;
@@ -52,7 +81,6 @@ bool checkWinningMove(int row, int col, int player) {
             } else break;
         }
         
-        // Check negative direction
         for (int i = 1; i < 4; i++) {
             int nr = row - i * dx;
             int nc = col - i * dy;
@@ -62,12 +90,12 @@ bool checkWinningMove(int row, int col, int player) {
         }
         
         if (count >= 4) {
-            board[row][col] = 0; // Remove temporary piece
+            board[row][col] = 0; 
             return true;
         }
     }
     
-    board[row][col] = 0; // Remove temporary piece
+    board[row][col] = 0; 
     return false;
 }
 
@@ -80,27 +108,27 @@ bool checkBlockingMove(int row, int col, int player) {
 // Check if placing at (i,j) creates good spacing (X _ _ X pattern)
 int getSpacingBonus(int i, int j, int player) {
     int bonus = 0;
-    int directions[4][2] = {{0,1}, {1,0}, {1,1}, {1,-1}}; // horizontal, vertical, diag1, diag2
+    int directions[4][2] = {{0,1}, {1,0}, {1,1}, {1,-1}}; 
     
     for (int d = 0; d < 4; d++) {
         int dx = directions[d][0];
         int dy = directions[d][1];
         
-        // Check X _ _ X pattern (3 spaces apart)
+       
         int x1 = i + 3*dx, y1 = j + 3*dy;
         int x2 = i - 3*dx, y2 = j - 3*dy;
         
         if (x1 >= 0 && x1 < SIZE && y1 >= 0 && y1 < SIZE && board[x1][y1] == player) {
-            // Check if middle spaces are empty
+           
             if (board[i + dx][j + dy] == 0 && board[i + 2*dx][j + 2*dy] == 0) {
-                bonus += 8000; // HUGE bonus for X _ _ X
+                bonus += 8000; 
             }
         }
         
         if (x2 >= 0 && x2 < SIZE && y2 >= 0 && y2 < SIZE && board[x2][y2] == player) {
-            // Check if middle spaces are empty
+           
             if (board[i - dx][j - dy] == 0 && board[i - 2*dx][j - 2*dy] == 0) {
-                bonus += 8000; // HUGE bonus for X _ _ X
+                bonus += 8000; 
             }
         }
     }
@@ -108,7 +136,7 @@ int getSpacingBonus(int i, int j, int player) {
     return bonus;
 }
 
-// HEAVILY penalize adjacent pieces (stupid clustering)
+// Penalize adjacent pieces (clustering)
 int getAdjacentPenalty(int i, int j, int player) {
     int penalty = 0;
     int adjacent[8][2] = {{-1,-1},{-1,0},{-1,1},{0,-1},{0,1},{1,-1},{1,0},{1,1}};
@@ -118,7 +146,7 @@ int getAdjacentPenalty(int i, int j, int player) {
         int nj = j + adjacent[a][1];
         
         if (ni >= 0 && ni < SIZE && nj >= 0 && nj < SIZE && board[ni][nj] == player) {
-            penalty -= 5000; // MASSIVE penalty for clustering
+            penalty -= 5000; 
         }
     }
     
@@ -157,8 +185,6 @@ int evaluateHeuristic(int player) {
     int score = 0;
     int opponent = 3 - player;
 
-    // Check all possible 4-in-a-row positions
-    // Horizontal
     for (int i = 0; i < SIZE; i++) {
         for (int j = 0; j <= SIZE - 4; j++) {
             int ai = 0, op = 0, empty = 0;
@@ -168,16 +194,15 @@ int evaluateHeuristic(int player) {
                 else empty++;
             }
             
-            if (ai == 4) score += 100000; // Win
-            if (op == 4) score -= 100000; // Loss
-            if (ai == 3 && op == 0) score += 10000; // 3 in a row, can win
-            if (op == 3 && ai == 0) score -= 15000; // Opponent 3 in a row, must block
+            if (ai == 4) score += 100000;
+            if (op == 4) score -= 100000;
+            if (ai == 3 && op == 0) score += 10000; 
+            if (op == 3 && ai == 0) score -= 15000;
             if (ai == 2 && op == 0) score += 1000;
             if (op == 2 && ai == 0) score -= 1500;
         }
     }
     
-    // Vertical
     for (int i = 0; i <= SIZE - 4; i++) {
         for (int j = 0; j < SIZE; j++) {
             int ai = 0, op = 0, empty = 0;
@@ -196,7 +221,6 @@ int evaluateHeuristic(int player) {
         }
     }
     
-    // Diagonal (top-left to bottom-right)
     for (int i = 0; i <= SIZE - 4; i++) {
         for (int j = 0; j <= SIZE - 4; j++) {
             int ai = 0, op = 0, empty = 0;
@@ -215,7 +239,6 @@ int evaluateHeuristic(int player) {
         }
     }
     
-    // Diagonal (top-right to bottom-left)
     for (int i = 0; i <= SIZE - 4; i++) {
         for (int j = 3; j < SIZE; j++) {
             int ai = 0, op = 0, empty = 0;
@@ -234,7 +257,6 @@ int evaluateHeuristic(int player) {
         }
     }
 
-    // Position bonuses
     for (int i = 0; i < SIZE; i++) {
         for (int j = 0; j < SIZE; j++) {
             if (board[i][j] == player) {
@@ -261,7 +283,6 @@ int alphaBeta(int depth, int alpha, int beta, bool maximizingPlayer, int player)
                 if (board[i][j] == 0) {
                     board[i][j] = player;
                     int eval = alphaBeta(depth - 1, alpha, beta, false, player);
-
                     board[i][j] = 0;
                     if (eval > maxEval) maxEval = eval;
                     if (eval > alpha) alpha = eval;
@@ -280,7 +301,7 @@ int alphaBeta(int depth, int alpha, int beta, bool maximizingPlayer, int player)
                     board[i][j] = 0;
                     if (eval < minEval) minEval = eval;
                     if (eval < beta) beta = eval;
-                    if (beta <= alpha) return minEval;
+                    if (beta <= alpha) break;
                 }
             }
         }
@@ -288,18 +309,39 @@ int alphaBeta(int depth, int alpha, int beta, bool maximizingPlayer, int player)
     }
 }
 
-// Modified bestMove function that always respects max_depth
 int bestMove(int player, int max_depth) {
     int bestVal = -1000000;
     int move = -1;
+    int opponent = 3 - player;
 
-    // Use minimax with the specified depth for ALL moves
-    // No more shortcuts - let the evaluation function handle priorities
+    // FIRST PRIORITY: Check if we can win immediately (in one move)
+    for (int i = 0; i < SIZE; i++) {
+        for (int j = 0; j < SIZE; j++) {
+            if (board[i][j] == 0) {
+                if (checkWinningMove(i, j, player)) {
+                    return (i + 1) * 10 + (j + 1);
+                }
+            }
+        }
+    }
+
+    // SECOND PRIORITY: Block opponent's winning moves (in one move)
+    for (int i = 0; i < SIZE; i++) {
+        for (int j = 0; j < SIZE; j++) {
+            if (board[i][j] == 0) {
+                if (checkBlockingMove(i, j, player)) {
+                    return (i + 1) * 10 + (j + 1);
+                }
+            }
+        }
+    }
+
+    // THIRD PRIORITY: Use minimax for strategic moves
     for (int i = 0; i < SIZE; i++) {
         for (int j = 0; j < SIZE; j++) {
             if (board[i][j] == 0) {
                 board[i][j] = player;
-                int moveVal = alphaBeta(max_depth, -1000000, 1000000, false, player);
+                int moveVal = alphaBeta(max_depth-1, -1000000, 1000000, false, player);
                 board[i][j] = 0;
                 
                 if (moveVal > bestVal) {
