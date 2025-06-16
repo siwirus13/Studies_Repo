@@ -1,0 +1,6 @@
+Hello world! Hello Hadoop.
+Big data is the future.
+MapReduce is a programming model for processing large data sets.
+Hadoop makes big data processing easy.
+Hadoop, Spark, and Flink are distributed data processing systems.
+Data, data, data! So much data...
