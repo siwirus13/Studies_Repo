@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 
 import os
 import subprocess
@@ -16,36 +17,46 @@ def ensure_hdfs_input():
     subprocess.run(["hdfs", "dfs", "-mkdir", "-p", "input"], stderr=subprocess.DEVNULL)
     subprocess.run(["hdfs", "dfs", "-put", "-f", input_file, "input"])
 
+
+import subprocess
+
 def run_mapreduce(mapper, reducer, output_dir):
-    print(f"➤ Uruchamianie MapReduce: {mapper} + {reducer} → {output_dir}")
-    
+    print(f"\n➤ Uruchamianie MapReduce: {mapper} + {reducer} → {output_dir}")
     subprocess.run(["hdfs", "dfs", "-rm", "-r", "-f", output_dir], stderr=subprocess.DEVNULL)
 
     hadoop_home = os.environ.get("HADOOP_HOME")
-    if not hadoop_home:
-        print("HADOOP_HOME nie jest ustawione.")
-        return
-
-    # Znajdź hadoop-streaming jar
+   
     streaming_dir = os.path.join(hadoop_home, "share/hadoop/tools/lib")
     jars = [f for f in os.listdir(streaming_dir) if f.startswith("hadoop-streaming") and f.endswith(".jar")]
     if not jars:
-        print(f"Nie znaleziono hadoop-streaming-*.jar w {streaming_dir}")
+        print(f"❌ Nie znaleziono hadoop-streaming-*.jar w {streaming_dir}")
         return
-
     streaming_jar = os.path.join(streaming_dir, jars[0])
 
-    subprocess.run([
+    
+    res = subprocess.run([
         "hadoop", "jar", streaming_jar,
         "-files", f"{mapper},{reducer}",
         "-mapper", f"python3 {mapper}",
         "-reducer", f"python3 {reducer}",
         "-input", "input",
         "-output", output_dir
-    ])
+        ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    
+    print("-----> STDOUT:")
+    print(res.stdout)
+    print("-----> STDERR:")
+    print(res.stderr)
+    print(res.returncode, "← kod return")
+
+    if res.returncode != 0:
+        print(f"❌ MapReduce job dla {output_dir} zakończony błędem, return code {res.returncode}")
+        return False
 
     print(f"➤ Wynik dla {output_dir}:")
-    subprocess.run(["hdfs", "dfs", "-cat", f"{output_dir}/part-00000"])
+    cat = subprocess.run(["hdfs", "dfs", "-cat", f"{output_dir}/part-00000"], capture_output=True, text=True)
+    print(cat.stdout)
+    return True
 
 
 def zadanie1():
@@ -62,7 +73,7 @@ def zadanie4():
 
 
 if __name__ == "__main__":
-    zadanie1()
-    zadanie2()
+    #zadanie1()
+    #zadanie2()
     zadanie3()
     zadanie4()
