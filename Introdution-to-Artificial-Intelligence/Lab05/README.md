@@ -68,7 +68,7 @@ The core of training this neural network relies on the **backpropagation algorit
 
 ## Performance Results
 
-### Sample Results
+### Results for learning rate 0.1
 
 | **Model Configuration**     | **Accuracy** | **Precision** | **Recall** | **F1-Score** |
 |-----------------------------|--------------|---------------|------------|--------------|
@@ -79,10 +79,36 @@ The core of training this neural network relies on the **backpropagation algorit
 | Sigmoid + L2 Normalized     | 0.983        | 0.980         | 0.985      | 0.983        |
 | ReLU + L2 Normalized        | 0.998        | 0.995         | 1.000      | 0.998        |
 
-### Key Observations
+### Results for learning rate 0.2
 
+| **Model Configuration**     | **Accuracy** | **Precision** | **Recall** | **F1-Score** |
+|-----------------------------|--------------|---------------|------------|--------------|
+| Sigmoid + Raw Data          | 0.855        | 0.841         | 0.896      | 0.868        |
+| ReLU + Raw Data             | 0.970        | 0.972         | 0.972      | 0.972        |
+| Sigmoid + L1 Normalized     | 0.910        | 0.855         | 1.000      | 0.922        |
+| ReLU + L1 Normalized        | 0.985        | 0.972         | 1.000      | 0.986        |
+| Sigmoid + L2 Normalized     | 0.990        | 1.000         | 0.981      | 0.995        |
+| ReLU + L2 Normalized        | 0.995        | 1.000         | 0.991      | 0.995        |
+
+### Results for learning rate 0.3
+
+| **Model Configuration**     | **Accuracy** | **Precision** | **Recall** | **F1-Score** |
+|-----------------------------|--------------|---------------|------------|--------------|
+| Sigmoid + Raw Data          | 0.895        | 0.521         | 0.906      | 0.901        |
+| ReLU + Raw Data             | 0.980        | 0.981         | 0.955      | 0.981        |
+| Sigmoid + L1 Normalized     | 0.935        | 0.891         | 1.000      | 0.942        |
+| ReLU + L1 Normalized        | 0.985        | 0.972         | 1.000      | 0.992        |
+| Sigmoid + L2 Normalized     | 0.995        | 1.000         | 0.991      | 0.995        |
+| ReLU + L2 Normalized        | 0.995        | 1.000         | 0.991      | 0.995        |
+
+
+### Key Observations
+# For learning rate 0.1
 - **ReLU outperforms sigmoid**, especially with raw data, demonstrating better handling of non-linear patterns and faster convergence.
 - **Sigmoid struggles with L1 normalization** (83% accuracy vs. ReLU's 99.3%), possibly due to gradient saturation or sensitivity to input scale.
 - **L2 normalization performs better than L1 normalization** across both activation functions, showing better suitability for this network architecture.
+
+# For learning rate 0.2 and 0.2
+- **Both models are nearly identical on all data sets**
 
 ---
