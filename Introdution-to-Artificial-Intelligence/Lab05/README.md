@@ -108,7 +108,7 @@ The core of training this neural network relies on the **backpropagation algorit
 - **Sigmoid struggles with L1 normalization** (83% accuracy vs. ReLU's 99.3%), possibly due to gradient saturation or sensitivity to input scale.
 - **L2 normalization performs better than L1 normalization** across both activation functions, showing better suitability for this network architecture.
 
-### For learning rate 0.2 and 0.2
+### For learning rate 0.2 and 0.3
 - **Both models are nearly identical on all data sets**
 
 ---
