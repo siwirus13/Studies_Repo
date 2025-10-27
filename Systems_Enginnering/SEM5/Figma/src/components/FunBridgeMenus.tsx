@@ -254,4 +254,3 @@ function SettingRow({ label, desc, onClick }: { label: string; desc?: string; on
     </button>
   );
 }
-

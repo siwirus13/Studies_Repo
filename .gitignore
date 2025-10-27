@@ -1,0 +1,52 @@
+# Node dependencies
+node_modules/
+
+# Build output
+dist/
+build/
+.next/
+out/
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+*.log
+
+# Environment variables
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Editor settings
+.vscode/
+.idea/
+*.swp
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Coverage reports
+coverage/
+
+# TypeScript cache
+*.tsbuildinfo
+
+# Optional: package manager files (lockfiles)
+# Uncomment ONE of the following if you don't want to commit lockfiles
+# package-lock.json
+# yarn.lock
+# pnpm-lock.yaml
+
+# Figma / design exports
+*.fig
+*.sketch
+
+# Misc
+tmp/
+temp/
+
