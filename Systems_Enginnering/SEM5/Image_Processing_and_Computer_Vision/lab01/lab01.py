@@ -15,7 +15,7 @@ def task2(img):
     gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
     return gray
 
-def task3(img, kernel_size=(5,5)):
+def task3(img, kernel_size=(5,7)):
     blurred = cv2.GaussianBlur(img, kernel_size, 0)
     return blurred
 
