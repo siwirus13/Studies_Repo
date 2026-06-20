@@ -1,0 +1,14 @@
+version,0,0,0:0.9.2
+scale,0,0,0:1.000000
+position,958,-12,964:1075
+boardp,-2,-12,964:1075
+spare_on,0,0,0:1
+osc_on,0,0,0:0
+useAlias,0,0,0:0
+debug,0,1,0:
+osc_cfg,132,671,0:0.200000,-0.500000,1,1,2.500000,1,2,5,7,6
+osc_ch1,0,0,0:2.000000,1.000000,1,#FF0000,0,16  RC1
+osc_ch2,0,0,0:2.000000,-5.000000,1,#00FF00,0,17  RC2
+Text Box,18,7,0:12,5,4,https://lcgamboa.github.io/picsimlab_examples/board_PICGenios.html#board_PICGenios_PIC18F4520_test_b4%Examplesource info
+Push Buttons,134,121,0:16,17,24,25,18,23,26,0,1,0,6
+LEDs,126,291,0:2,3,6,7,4,5,0,0,1,1,1,1,1,4,4,0,0,6

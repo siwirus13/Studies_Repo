@@ -1,0 +1,19 @@
+Here are scripts that are used for continuing the training:
+
+python train_ppo.py --start_phase 4 --resume checkpoints/phase3_best/best_model
+
+
+VISUALIZE:
+# Basic usage
+python visualize_3d.py --model ./checkpoints/best_model.zip
+
+# Save to file (useful on headless servers / i3 without display)
+python visualize_3d.py --model ./checkpoints/best_model.zip --save flight3d.png
+
+# Calm air, print every step, denser arrows
+python visualize_3d.py --model ./checkpoints/best_model.zip \
+    --wind 0 --no-turb --live-every 1 --arrow-every 25
+
+# Skip terminal output, fixed seed for reproducibility
+python visualize_3d.py --model ./checkpoints/best_model.zip \
+    --no-live --seed 42

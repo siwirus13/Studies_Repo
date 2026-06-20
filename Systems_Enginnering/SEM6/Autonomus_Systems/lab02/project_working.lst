@@ -1,0 +1,2288 @@
+gpasm-1.4.0 #1107 (Jan  1 2021) project_worki   5-6-2026  10:54:32          PAGE  1
+
+
+LOC    OBJECT CODE    LINE  SOURCE TEXT
+  VALUE
+
+                      00001 ; =============================================================================
+                      00002 ; SAPER (Minesweeper) dla PIC16F877A + ILI9341 (SPI)
+                      00003 ; =============================================================================
+                      00004 ;
+                      00005 ; PRZYCISKI (active-low, PORTB z wbudowanymi pull-upami):
+                      00006 ;   RB0 = UP       (kursor w górę)
+                      00007 ;   RB1 = DOWN     (kursor w dół)
+                      00008 ;   RB2 = LEFT     (kursor w lewo)
+                      00009 ;   RB3 = RIGHT    (kursor w prawo)
+                      00010 ;   RB4 = REVEAL   (odkryj pole)
+                      00011 ;   RB5 = FLAG     (postaw/zdejmij flagę)
+                      00012 ;   RB6 = RESTART  (nowa gra)
+                      00013 ;
+                      00014 ; MAPA PAMIĘCI RAM:
+                      00015 ;   0x20-0x2C : warstwa MIN      (10*10 = 100 bitów -> 13 bajtów)
+                      00016 ;   0x2D-0x39 : warstwa FLAGI    (10*10 bitów)
+                      00017 ;   0x3A-0x46 : warstwa ODKRYTE  (10*10 bitów)
+                      00018 ;
+                      00019 ;   0x50 : kursor X (0-9)
+                      00020 ;   0x51 : kursor Y (0-9)
+                      00021 ;
+                      00022 ;   0x60 : roboczy X pola
+                      00023 ;   0x61 : roboczy Y pola
+                      00024 ;   0x62 : adres bazowy warstwy
+                      00025 ;   0x63 : wynik GET_BIT (0 lub 1)
+                      00026 ;   0x64 : maska bitu (1 bajt)
+                      00027 ;   0x65 : tmp ogolny
+                      00028 ;   0x66 : tmp ogolny
+                      00029 ;   0x67 : tmp ogolny
+                      00030 ;
+                      00031 ;   0x68 : kolor H (RGB565 high byte)
+                      00032 ;   0x69 : kolor L (RGB565 low byte)
+                      00033 ;
+                      00034 ;   0x70 : wynik COUNT_NEIGHBORS (0-8, 0xFF = błąd/skip)
+                      00035 ;   0x71 : DY pętli sąsiadów
+                      00036 ;   0x72 : DX pętli sąsiadów
+                      00037 ;   0x73 : roboczy sX
+                      00038 ;   0x74 : roboczy sY
+                      00039 ;   0x75 : roboczy (różne)
+                      00040 ;   0x76 : roboczy (różne)
+                      00041 ;
+                      00042 ;   0x78 : licznik delay outer
+                      00043 ;   0x79 : licznik delay inner
+                      00044 ;   0x7A-0x7C : liczniki wypełnienia ekranu
+                      00045 ;
+                      00046 ;   0x7D : LFSR high
+                      00047 ;   0x7E : LFSR low
+                      00048 ;   0x7F : licznik pętli plant mines
+                      00049 ;
+                      00050 ;   STOS BFS (flood-fill):
+                      00051 ;   0x80-0x8F : X wpisów stosu (16 miejsc)
+                      00052 ;   0x90-0x9F : Y wpisów stosu (16 miejsc)
+                      00053 ;   0xA0      : wierzchołek stosu (0-16)
+gpasm-1.4.0 #1107 (Jan  1 2021) project_worki   5-6-2026  10:54:32          PAGE  2
+
+
+LOC    OBJECT CODE    LINE  SOURCE TEXT
+  VALUE
+
+                      00054 ;
+                      00055 ;   0xA1 : licznik odkrytych pól (max 80 = wygrana)
+                      00056 ;   0xA2 : stan gry (0=trwa, 1=wygrana, 2=przegrana)
+                      00057 ;
+                      00058 ;   0xB0-0xB5 : scratch rysowania kafelka (x0,x1,y0,y1,cntY,cntX)
+                      00059 ;
+                      00060 ;   SCRATCH FF_PUSH_NEIGHBORS (izolowany):
+                      00061 ;   0xC0 : centre X
+                      00062 ;   0xC1 : centre Y
+                      00063 ;   0xC2 : DX
+                      00064 ;   0xC3 : DY
+                      00065 ;   0xC4 : kandydat X
+                      00066 ;   0xC5 : kandydat Y
+                      00067 ;
+                      00068 ; =============================================================================
+                      00069 
+                      00070 #include <p16f877a.inc>
+                      00001         LIST
+                      00002 
+                      00003 ;==========================================================================
+                      00004 ; Build date : Aug 07 2014
+                      00005 ;  MPASM PIC16F877A processor include
+                      00006 ; 
+                      00007 ;  (c) Copyright 1999-2014 Microchip Technology, All rights reserved
+                      00008 ;==========================================================================
+                      00009 
+                      00567         LIST
+2007   3FBB           00071     __CONFIG _FOSC_EXTRC & _WDTE_OFF & _PWRTE_OFF & _BOREN_OFF & _LVP_ON & _CPD_OFF & _WRT_OFF & _CP_OFF
+                      00072 
+  00000020            00073 LAYER_MINE  EQU 0x20
+  0000002D            00074 LAYER_FLAG  EQU 0x2D
+  0000003A            00075 LAYER_REV   EQU 0x3A
+  0000000A            00076 BOARD_W     EQU d'10'
+  0000000A            00077 BOARD_H     EQU d'10'
+  00000014            00078 NUM_MINES   EQU d'20'
+  00000050            00079 WIN_COUNT   EQU d'80'
+                      00080 
+0000                  00081     ORG 0x0000
+0000   2805           00082     goto  START
+                      00083 
+0005                  00084     ORG 0x0005
+                      00085 
+                      00086 ; =============================================================================
+                      00087 ; START
+                      00088 ; =============================================================================
+0005                  00089 START:
+                      00090     ; --- Bank 1: konfiguracja kierunków portów ---
+0005   1303           00091     bcf   STATUS, RP1
+0006   1683           00092     bsf   STATUS, RP0
+0007   3006           00093     movlw 0x06
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x1f}.
+0008   009F           00094     movwf ADCON1            ; porty A/E jako cyfrowe
+0009   30FF           00095     movlw 0xFF
+gpasm-1.4.0 #1107 (Jan  1 2021) project_worki   5-6-2026  10:54:32          PAGE  3
+
+
+LOC    OBJECT CODE    LINE  SOURCE TEXT
+  VALUE
+
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x6}.
+000A   0086           00096     movwf TRISB             ; PORTB = wejścia
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x8}.
+000B   0188           00097     clrf  TRISD
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x7}.
+000C   1007           00098     bcf   TRISC, 0          ; RC0 = RST
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x7}.
+000D   1087           00099     bcf   TRISC, 1          ; RC1 = D/C
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x7}.
+000E   1107           00100     bcf   TRISC, 2          ; RC2 = CS
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x7}.
+000F   1187           00101     bcf   TRISC, 3          ; RC3 = SCK
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x7}.
+0010   1287           00102     bcf   TRISC, 5          ; RC5 = SDO
+                      00103     ; Włącz pull-upy PORTB
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x1}.
+0011   1381           00104     bcf   OPTION_REG, 7
+                      00105     ; SPI: SMP=0, CKE=1
+0012   3040           00106     movlw b'01000000'
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x14}.
+0013   0094           00107     movwf SSPSTAT
+0014   1283           00108     bcf   STATUS, RP0
+                      00109     ; SPI Master Fosc/4
+0015   3020           00110     movlw b'00100000'
+0016   0094           00111     movwf SSPCON
+                      00112 
+                      00113     ; --- Inicjalizacja LCD ---
+0017   1507           00114     bsf   PORTC, 2          ; CS=1
+0018   1407           00115     bsf   PORTC, 0          ; RST=1
+0019   23A1           00116     call  DELAY_20MS
+001A   1007           00117     bcf   PORTC, 0          ; RST=0
+001B   23A1           00118     call  DELAY_20MS
+001C   1407           00119     bsf   PORTC, 0          ; RST=1
+001D   23A1           00120     call  DELAY_20MS
+001E   3001           00121     movlw 0x01
+001F   238F           00122     call  LCD_CMD           ; Software Reset
+0020   23A1           00123     call  DELAY_20MS
+0021   3011           00124     movlw 0x11
+0022   238F           00125     call  LCD_CMD           ; Sleep Out
+0023   23A1           00126     call  DELAY_20MS
+0024   303A           00127     movlw 0x3A
+0025   238F           00128     call  LCD_CMD           ; Pixel Format
+0026   3055           00129     movlw 0x55
+0027   2392           00130     call  LCD_DAT           ; 16bpp
+0028   3029           00131     movlw 0x29
+0029   238F           00132     call  LCD_CMD           ; Display ON
+                      00133 
+                      00134     ; --- Wypełnij ekran czarnym ---
+002A   2361           00135     call  LCD_FULL_BLACK
+                      00136 
+                      00137     ; --- Nowa gra ---
+002B   202E           00138     call  GAME_INIT
+                      00139 
+gpasm-1.4.0 #1107 (Jan  1 2021) project_worki   5-6-2026  10:54:32          PAGE  4
+
+
+LOC    OBJECT CODE    LINE  SOURCE TEXT
+  VALUE
+
+                      00140 ; --- Główna pętla ---
+002C                  00141 MAIN_LOOP:
+002C   2201           00142     call  READ_BUTTONS
+002D   282C           00143     goto  MAIN_LOOP
+                      00144 
+                      00145 ; =============================================================================
+                      00146 ; GAME_INIT - zeruje stan, generuje miny, rysuje planszę
+                      00147 ; =============================================================================
+002E                  00148 GAME_INIT:
+                      00149     ; Wyczyść warstwy 0x20..0x46
+002E   3020           00150     movlw 0x20
+002F   0084           00151     movwf FSR
+0030                  00152 GI_CLR:
+0030   0180           00153     clrf  INDF
+0031   0A84           00154     incf  FSR, F
+0032   3047           00155     movlw 0x47
+0033   0204           00156     subwf FSR, W
+0034   1D03           00157     btfss STATUS, Z
+0035   2830           00158     goto  GI_CLR
+                      00159 
+                      00160     ; Zeruj zmienne stanu
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x20}.
+0036   01A0           00161     clrf  0xA0
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x21}.
+0037   01A1           00162     clrf  0xA1
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x22}.
+0038   01A2           00163     clrf  0xA2
+                      00164 
+                      00165     ; Kursor na środek
+0039   3004           00166     movlw d'4'
+003A   00D0           00167     movwf 0x50
+003B   00D1           00168     movwf 0x51
+                      00169 
+                      00170     ; Seed LFSR (nigdy nie może być 0x0000)
+003C   30AC           00171     movlw 0xAC
+003D   00FD           00172     movwf 0x7D
+003E   30E3           00173     movlw 0xE3
+003F   00FE           00174     movwf 0x7E
+                      00175 
+0040   2044           00176     call  PLANT_MINES
+0041   2117           00177     call  DRAW_ALL_TILES
+0042   218F           00178     call  DRAW_CURSOR
+0043   0008           00179     return
+                      00180 
+                      00181 ; =============================================================================
+                      00182 ; PLANT_MINES - losuje NUM_MINES unikalnych pozycji min
+                      00183 ; LFSR 16-bit, poly x^16+x^14+x^13+x^11+1 (0xB400 Galois)
+                      00184 ; =============================================================================
+0044                  00185 PLANT_MINES:
+0044   3014           00186     movlw NUM_MINES
+0045   00FF           00187     movwf 0x7F              ; licznik
+                      00188 
+0046                  00189 PM_NEXT:
+gpasm-1.4.0 #1107 (Jan  1 2021) project_worki   5-6-2026  10:54:32          PAGE  5
+
+
+LOC    OBJECT CODE    LINE  SOURCE TEXT
+  VALUE
+
+                      00190     ; Krok LFSR -> nowy bajt w 0x7E
+0046   2067           00191     call  LFSR_STEP
+                      00192 
+                      00193     ; Redukuj 0x7E mod 100
+0047   087E           00194     movf  0x7E, W
+0048   00E5           00195     movwf 0x65              ; tmp = random
+0049                  00196 PM_MOD:
+0049   3064           00197     movlw d'100'
+004A   0265           00198     subwf 0x65, W
+004B   1C03           00199     btfss STATUS, C
+004C   284F           00200     goto  PM_GOT            ; 0x65 < 100
+004D   00E5           00201     movwf 0x65
+004E   2849           00202     goto  PM_MOD
+                      00203 
+004F                  00204 PM_GOT:
+                      00205     ; 0x65 = pozycja liniowa 0..99
+                      00206     ; Zamień na X,Y: Y=pos/10, X=pos%10
+004F   0865           00207     movf  0x65, W
+0050   00E6           00208     movwf 0x66              ; kopia
+0051   01E1           00209     clrf  0x61              ; Y = 0
+0052                  00210 PM_DIV:
+0052   300A           00211     movlw d'10'
+0053   0266           00212     subwf 0x66, W
+0054   1C03           00213     btfss STATUS, C
+0055   2859           00214     goto  PM_DIV_DONE
+0056   00E6           00215     movwf 0x66
+0057   0AE1           00216     incf  0x61, F
+0058   2852           00217     goto  PM_DIV
+0059                  00218 PM_DIV_DONE:
+                      00219     ; 0x61=Y, 0x66=X
+0059   0866           00220     movf  0x66, W
+005A   00E0           00221     movwf 0x60              ; 0x60=X
+                      00222 
+                      00223     ; Czy już jest mina?
+005B   3020           00224     movlw LAYER_MINE
+005C   00E2           00225     movwf 0x62
+005D   2096           00226     call  GET_BIT
+005E   08E3           00227     movf  0x63, F
+005F   1D03           00228     btfss STATUS, Z
+0060   2846           00229     goto  PM_NEXT           ; Jest - losuj ponownie
+                      00230 
+                      00231     ; Postaw minę
+0061   3020           00232     movlw LAYER_MINE
+0062   00E2           00233     movwf 0x62
+0063   209E           00234     call  SET_BIT
+0064   0BFF           00235     decfsz 0x7F, F
+0065   2846           00236     goto  PM_NEXT
+0066   0008           00237     return
+                      00238 
+                      00239 ; =============================================================================
+                      00240 ; LFSR_STEP - jeden krok LFSR 16-bit Galois
+                      00241 ; Stan: [0x7D:0x7E], po kroku wynik widoczny w 0x7E
+                      00242 ; =============================================================================
+gpasm-1.4.0 #1107 (Jan  1 2021) project_worki   5-6-2026  10:54:32          PAGE  6
+
+
+LOC    OBJECT CODE    LINE  SOURCE TEXT
+  VALUE
+
+0067                  00243 LFSR_STEP:
+                      00244     ; LSB = bit wyjściowy
+0067   1003           00245     bcf   STATUS, C
+0068   187E           00246     btfsc 0x7E, 0
+0069   1403           00247     bsf   STATUS, C         ; C = LSB(0x7E)
+                      00248     ; Przesuń [0x7D:0x7E] w prawo
+006A   0CFD           00249     rrf   0x7D, F
+006B   0CFE           00250     rrf   0x7E, F
+                      00251     ; Jeśli bit wyjściowy był 1, XOR z maską poly
+006C   1C03           00252     btfss STATUS, C
+006D   0008           00253     return
+006E   30B4           00254     movlw 0xB4
+006F   06FD           00255     xorwf 0x7D, F
+                      00256     ; Low byte maski = 0x00, nie trzeba XOR
+0070   0008           00257     return
+                      00258 
+                      00259 ; =============================================================================
+                      00260 ; CALC_BIT_ADDR
+                      00261 ; Wejście: 0x60=X, 0x61=Y, 0x62=adres bazowy
+                      00262 ; Wyjście: FSR -> bajt, 0x64 -> maska
+                      00263 ; =============================================================================
+0071                  00264 CALC_BIT_ADDR:
+                      00265     ; index = Y*10 + X
+0071   0861           00266     movf  0x61, W
+0072   00E5           00267     movwf 0x65              ; tmp = Y
+0073   0860           00268     movf  0x60, W
+0074   00E6           00269     movwf 0x66              ; index = X
+0075   08E5           00270     movf  0x65, F
+0076   1903           00271     btfsc STATUS, Z
+0077   287C           00272     goto  CBA_NO_Y
+0078                  00273 CBA_Y:
+0078   300A           00274     movlw d'10'
+0079   07E6           00275     addwf 0x66, F
+007A   0BE5           00276     decfsz 0x65, F
+007B   2878           00277     goto  CBA_Y
+007C                  00278 CBA_NO_Y:
+                      00279     ; 0x66 = index
+007C   0866           00280     movf  0x66, W
+007D   00E7           00281     movwf 0x67              ; kopia indeksu dla bit%8
+                      00282 
+                      00283     ; bajt = index >> 3
+007E   1003           00284     bcf   STATUS, C
+007F   0CE6           00285     rrf   0x66, F
+0080   1003           00286     bcf   STATUS, C
+0081   0CE6           00287     rrf   0x66, F
+0082   1003           00288     bcf   STATUS, C
+0083   0CE6           00289     rrf   0x66, F
+0084   300F           00290     movlw 0x0F
+0085   05E6           00291     andwf 0x66, F           ; max 13 bajtów
+                      00292 
+                      00293     ; FSR = baza + bajt
+0086   0862           00294     movf  0x62, W
+0087   0766           00295     addwf 0x66, W
+gpasm-1.4.0 #1107 (Jan  1 2021) project_worki   5-6-2026  10:54:32          PAGE  7
+
+
+LOC    OBJECT CODE    LINE  SOURCE TEXT
+  VALUE
+
+0088   0084           00296     movwf FSR
+                      00297 
+                      00298     ; bit = index % 8 = 3 dolne bity kopii
+0089   3007           00299     movlw 0x07
+008A   0567           00300     andwf 0x67, W
+008B   00E5           00301     movwf 0x65              ; numer bitu
+                      00302 
+                      00303     ; maska = 1 << numer_bitu
+008C   3001           00304     movlw b'00000001'
+008D   00E4           00305     movwf 0x64
+008E   08E5           00306     movf  0x65, F
+008F   1903           00307     btfsc STATUS, Z
+0090   2895           00308     goto  CBA_DONE
+0091                  00309 CBA_SHIFT:
+0091   1003           00310     bcf   STATUS, C
+0092   0DE4           00311     rlf   0x64, F
+0093   0BE5           00312     decfsz 0x65, F
+0094   2891           00313     goto  CBA_SHIFT
+0095                  00314 CBA_DONE:
+0095   0008           00315     return
+                      00316 
+                      00317 ; =============================================================================
+                      00318 ; GET_BIT: wynik w 0x63 (0 lub 1)
+                      00319 ; =============================================================================
+0096                  00320 GET_BIT:
+0096   2071           00321     call  CALC_BIT_ADDR
+0097   0864           00322     movf  0x64, W
+0098   0500           00323     andwf INDF, W
+0099   3000           00324     movlw 0x00
+009A   1D03           00325     btfss STATUS, Z
+009B   3001           00326     movlw 0x01
+009C   00E3           00327     movwf 0x63
+009D   0008           00328     return
+                      00329 
+                      00330 ; =============================================================================
+                      00331 ; SET_BIT
+                      00332 ; =============================================================================
+009E                  00333 SET_BIT:
+009E   2071           00334     call  CALC_BIT_ADDR
+009F   0864           00335     movf  0x64, W
+00A0   0480           00336     iorwf INDF, F
+00A1   0008           00337     return
+                      00338 
+                      00339 ; =============================================================================
+                      00340 ; XOR_BIT
+                      00341 ; =============================================================================
+00A2                  00342 XOR_BIT:
+00A2   2071           00343     call  CALC_BIT_ADDR
+00A3   0864           00344     movf  0x64, W
+00A4   0680           00345     xorwf INDF, F
+00A5   0008           00346     return
+                      00347 
+                      00348 ; =============================================================================
+gpasm-1.4.0 #1107 (Jan  1 2021) project_worki   5-6-2026  10:54:32          PAGE  8
+
+
+LOC    OBJECT CODE    LINE  SOURCE TEXT
+  VALUE
+
+                      00349 ; COUNT_NEIGHBORS - liczy miny dookoła (0x60, 0x61)
+                      00350 ; Wynik: 0x70
+                      00351 ; =============================================================================
+00A6                  00352 COUNT_NEIGHBORS:
+00A6   01F0           00353     clrf  0x70
+                      00354 
+00A7   30FF           00355     movlw 0xFF
+00A8   00F1           00356     movwf 0x71              ; DY = -1
+00A9                  00357 CN_LOOP_Y:
+00A9   30FF           00358     movlw 0xFF
+00AA   00F2           00359     movwf 0x72              ; DX = -1
+00AB                  00360 CN_LOOP_X:
+00AB   08F2           00361     movf  0x72, F
+00AC   1D03           00362     btfss STATUS, Z
+00AD   28B2           00363     goto  CN_CALC
+00AE   08F1           00364     movf  0x71, F
+00AF   1D03           00365     btfss STATUS, Z
+00B0   28B2           00366     goto  CN_CALC
+00B1   28D1           00367     goto  CN_NEXT_X         ; DX=0, DY=0 -> centrum, pomiń
+                      00368 
+00B2                  00369 CN_CALC:
+                      00370     ; sX = X + DX
+00B2   0860           00371     movf  0x60, W
+00B3   0772           00372     addwf 0x72, W
+00B4   00F3           00373     movwf 0x73
+00B5   300A           00374     movlw BOARD_W
+00B6   0273           00375     subwf 0x73, W
+00B7   1803           00376     btfsc STATUS, C
+00B8   28D1           00377     goto  CN_NEXT_X         ; sX >= 10 (też obsługuje wrap 0xFF+0=255)
+                      00378 
+                      00379     ; sY = Y + DY
+00B9   0861           00380     movf  0x61, W
+00BA   0771           00381     addwf 0x71, W
+00BB   00F4           00382     movwf 0x74
+00BC   300A           00383     movlw BOARD_H
+00BD   0274           00384     subwf 0x74, W
+00BE   1803           00385     btfsc STATUS, C
+00BF   28D1           00386     goto  CN_NEXT_X
+                      00387 
+                      00388     ; Zapisz bieżące X/Y i sprawdź minę na (sX,sY)
+00C0   0860           00389     movf  0x60, W
+00C1   00F5           00390     movwf 0x75
+00C2   0861           00391     movf  0x61, W
+00C3   00F6           00392     movwf 0x76
+00C4   0873           00393     movf  0x73, W
+00C5   00E0           00394     movwf 0x60
+00C6   0874           00395     movf  0x74, W
+00C7   00E1           00396     movwf 0x61
+00C8   3020           00397     movlw LAYER_MINE
+00C9   00E2           00398     movwf 0x62
+00CA   2096           00399     call  GET_BIT
+00CB   0875           00400     movf  0x75, W
+00CC   00E0           00401     movwf 0x60
+gpasm-1.4.0 #1107 (Jan  1 2021) project_worki   5-6-2026  10:54:32          PAGE  9
+
+
+LOC    OBJECT CODE    LINE  SOURCE TEXT
+  VALUE
+
+00CD   0876           00402     movf  0x76, W
+00CE   00E1           00403     movwf 0x61
+00CF   0863           00404     movf  0x63, W
+00D0   07F0           00405     addwf 0x70, F
+                      00406 
+00D1                  00407 CN_NEXT_X:
+00D1   0AF2           00408     incf  0x72, F
+00D2   3002           00409     movlw 0x02
+00D3   0272           00410     subwf 0x72, W
+00D4   1D03           00411     btfss STATUS, Z
+00D5   28AB           00412     goto  CN_LOOP_X
+00D6                  00413 CN_NEXT_Y:
+00D6   0AF1           00414     incf  0x71, F
+00D7   3002           00415     movlw 0x02
+00D8   0271           00416     subwf 0x71, W
+00D9   1D03           00417     btfss STATUS, Z
+00DA   28A9           00418     goto  CN_LOOP_Y
+00DB   0008           00419     return
+                      00420 
+                      00421 ; =============================================================================
+                      00422 ; GET_COLOR - ustaw 0x68/0x69 na podstawie wartości w 0x70
+                      00423 ; Kolory odkrytych pól (0-5+):
+                      00424 ;   0 -> Czarny     0x0000
+                      00425 ;   1 -> Zielony    0x07E0
+                      00426 ;   2 -> Niebieski  0x001F
+                      00427 ;   3 -> Cyjan      0x07FF
+                      00428 ;   4 -> Czerwony   0xF800
+                      00429 ;   5 -> Magenta    0xF81F
+                      00430 ;   6+ -> Pomarańcz 0xFC00
+                      00431 ; =============================================================================
+00DC                  00432 GET_COLOR:
+00DC   08F0           00433     movf  0x70, F
+00DD   1903           00434     btfsc STATUS, Z
+00DE   28F4           00435     goto  GC_0
+00DF   3001           00436     movlw 0x01
+00E0   0270           00437     subwf 0x70, W
+00E1   1903           00438     btfsc STATUS, Z
+00E2   28F9           00439     goto  GC_1
+00E3   3002           00440     movlw 0x02
+00E4   0270           00441     subwf 0x70, W
+00E5   1903           00442     btfsc STATUS, Z
+00E6   28FE           00443     goto  GC_2
+00E7   3003           00444     movlw 0x03
+00E8   0270           00445     subwf 0x70, W
+00E9   1903           00446     btfsc STATUS, Z
+00EA   2903           00447     goto  GC_3
+00EB   3004           00448     movlw 0x04
+00EC   0270           00449     subwf 0x70, W
+00ED   1903           00450     btfsc STATUS, Z
+00EE   2908           00451     goto  GC_4
+00EF   3005           00452     movlw 0x05
+00F0   0270           00453     subwf 0x70, W
+00F1   1903           00454     btfsc STATUS, Z
+gpasm-1.4.0 #1107 (Jan  1 2021) project_worki   5-6-2026  10:54:32          PAGE 10
+
+
+LOC    OBJECT CODE    LINE  SOURCE TEXT
+  VALUE
+
+00F2   290D           00455     goto  GC_5
+00F3   2912           00456     goto  GC_6
+                      00457 
+00F4                  00458 GC_0:
+00F4   3000           00459     movlw 0x00
+00F5   00E8           00460     movwf 0x68
+00F6   3000           00461     movlw 0x00
+00F7   00E9           00462     movwf 0x69
+00F8   0008           00463     return
+00F9                  00464 GC_1:
+00F9   3007           00465     movlw 0x07
+00FA   00E8           00466     movwf 0x68
+00FB   30E0           00467     movlw 0xE0
+00FC   00E9           00468     movwf 0x69
+00FD   0008           00469     return
+00FE                  00470 GC_2:
+00FE   3000           00471     movlw 0x00
+00FF   00E8           00472     movwf 0x68
+0100   301F           00473     movlw 0x1F
+0101   00E9           00474     movwf 0x69
+0102   0008           00475     return
+0103                  00476 GC_3:
+0103   3007           00477     movlw 0x07
+0104   00E8           00478     movwf 0x68
+0105   30FF           00479     movlw 0xFF
+0106   00E9           00480     movwf 0x69
+0107   0008           00481     return
+0108                  00482 GC_4:
+0108   30F8           00483     movlw 0xF8
+0109   00E8           00484     movwf 0x68
+010A   3000           00485     movlw 0x00
+010B   00E9           00486     movwf 0x69
+010C   0008           00487     return
+010D                  00488 GC_5:
+010D   30F8           00489     movlw 0xF8
+010E   00E8           00490     movwf 0x68
+010F   301F           00491     movlw 0x1F
+0110   00E9           00492     movwf 0x69
+0111   0008           00493     return
+0112                  00494 GC_6:
+0112   30FC           00495     movlw 0xFC
+0113   00E8           00496     movwf 0x68
+0114   3000           00497     movlw 0x00
+0115   00E9           00498     movwf 0x69
+0116   0008           00499     return
+                      00500 
+                      00501 ; =============================================================================
+                      00502 ; DRAW_ALL_TILES - rysuje całą planszę
+                      00503 ; =============================================================================
+0117                  00504 DRAW_ALL_TILES:
+0117   01E0           00505     clrf  0x60
+0118                  00506 DAT_X:
+0118   01E1           00507     clrf  0x61
+gpasm-1.4.0 #1107 (Jan  1 2021) project_worki   5-6-2026  10:54:32          PAGE 11
+
+
+LOC    OBJECT CODE    LINE  SOURCE TEXT
+  VALUE
+
+0119                  00508 DAT_Y:
+0119   2125           00509     call  DRAW_TILE_STATE
+011A   0AE1           00510     incf  0x61, F
+011B   300A           00511     movlw BOARD_H
+011C   0261           00512     subwf 0x61, W
+011D   1D03           00513     btfss STATUS, Z
+011E   2919           00514     goto  DAT_Y
+011F   0AE0           00515     incf  0x60, F
+0120   300A           00516     movlw BOARD_W
+0121   0260           00517     subwf 0x60, W
+0122   1D03           00518     btfss STATUS, Z
+0123   2918           00519     goto  DAT_X
+0124   0008           00520     return
+                      00521 
+                      00522 ; =============================================================================
+                      00523 ; DRAW_TILE_STATE - rysuje kafelek (0x60, 0x61) wg stanu gry
+                      00524 ; =============================================================================
+0125                  00525 DRAW_TILE_STATE:
+                      00526     ; Odkryte?
+0125   303A           00527     movlw LAYER_REV
+0126   00E2           00528     movwf 0x62
+0127   2096           00529     call  GET_BIT
+0128   08E3           00530     movf  0x63, F
+0129   1D03           00531     btfss STATUS, Z
+012A   293B           00532     goto  DTS_REVEALED
+                      00533 
+                      00534     ; Flagowane?
+012B   302D           00535     movlw LAYER_FLAG
+012C   00E2           00536     movwf 0x62
+012D   2096           00537     call  GET_BIT
+012E   08E3           00538     movf  0x63, F
+012F   1D03           00539     btfss STATUS, Z
+0130   2936           00540     goto  DTS_FLAG
+                      00541 
+                      00542     ; Zakryte - szare
+0131   3084           00543     movlw 0x84
+0132   00E8           00544     movwf 0x68
+0133   3010           00545     movlw 0x10
+0134   00E9           00546     movwf 0x69
+0135   293D           00547     goto  DTS_DRAW
+                      00548 
+0136                  00549 DTS_FLAG:
+                      00550     ; Żółte
+0136   30FF           00551     movlw 0xFF
+0137   00E8           00552     movwf 0x68
+0138   30E0           00553     movlw 0xE0
+0139   00E9           00554     movwf 0x69
+013A   293D           00555     goto  DTS_DRAW
+                      00556 
+013B                  00557 DTS_REVEALED:
+013B   20A6           00558     call  COUNT_NEIGHBORS
+013C   20DC           00559     call  GET_COLOR
+                      00560 
+gpasm-1.4.0 #1107 (Jan  1 2021) project_worki   5-6-2026  10:54:32          PAGE 12
+
+
+LOC    OBJECT CODE    LINE  SOURCE TEXT
+  VALUE
+
+013D                  00561 DTS_DRAW:
+013D   213F           00562     call  DRAW_TILE
+013E   0008           00563     return
+                      00564 
+                      00565 ; =============================================================================
+                      00566 ; DRAW_TILE - rysuje kwadrat 18x18 px
+                      00567 ; Piksel x0 = X*20+10, y0 = Y*20+10
+                      00568 ; Wejście: 0x60=X, 0x61=Y, 0x68/0x69=kolor
+                      00569 ; =============================================================================
+013F                  00570 DRAW_TILE:
+                      00571     ; --- x0 = X*20 + 10 ---
+                      00572     ; X*20 = X*16 + X*4
+013F   0860           00573     movf  0x60, W
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x30}.
+0140   00B0           00574     movwf 0xB0              ; B0 = X
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x30}.
+0141   0E30           00575     swapf 0xB0, W
+0142   39F0           00576     andlw 0xF0
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x30}.
+0143   00B0           00577     movwf 0xB0              ; B0 = X*16
+                      00578 
+0144   0860           00579     movf  0x60, W
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x34}.
+0145   00B4           00580     movwf 0xB4              ; B4 = X
+0146   1003           00581     bcf   STATUS, C
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x34}.
+0147   0DB4           00582     rlf   0xB4, F
+0148   1003           00583     bcf   STATUS, C
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x34}.
+0149   0DB4           00584     rlf   0xB4, F           ; B4 = X*4
+                      00585 
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x34}.
+014A   0834           00586     movf  0xB4, W
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x30}.
+014B   07B0           00587     addwf 0xB0, F           ; B0 = X*20
+014C   300A           00588     movlw d'10'
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x30}.
+014D   07B0           00589     addwf 0xB0, F           ; B0 = x0
+                      00590 
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x30}.
+014E   0830           00591     movf  0xB0, W
+014F   3E11           00592     addlw d'17'
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x31}.
+0150   00B1           00593     movwf 0xB1              ; B1 = x1
+                      00594 
+                      00595     ; --- y0 = Y*20 + 10 ---
+0151   0861           00596     movf  0x61, W
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x32}.
+0152   00B2           00597     movwf 0xB2
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x32}.
+0153   0E32           00598     swapf 0xB2, W
+0154   39F0           00599     andlw 0xF0
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x32}.
+gpasm-1.4.0 #1107 (Jan  1 2021) project_worki   5-6-2026  10:54:32          PAGE 13
+
+
+LOC    OBJECT CODE    LINE  SOURCE TEXT
+  VALUE
+
+0155   00B2           00600     movwf 0xB2              ; B2 = Y*16
+                      00601 
+0156   0861           00602     movf  0x61, W
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x34}.
+0157   00B4           00603     movwf 0xB4
+0158   1003           00604     bcf   STATUS, C
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x34}.
+0159   0DB4           00605     rlf   0xB4, F
+015A   1003           00606     bcf   STATUS, C
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x34}.
+015B   0DB4           00607     rlf   0xB4, F           ; B4 = Y*4
+                      00608 
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x34}.
+015C   0834           00609     movf  0xB4, W
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x32}.
+015D   07B2           00610     addwf 0xB2, F
+015E   300A           00611     movlw d'10'
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x32}.
+015F   07B2           00612     addwf 0xB2, F           ; B2 = y0
+                      00613 
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x32}.
+0160   0832           00614     movf  0xB2, W
+0161   3E11           00615     addlw d'17'
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x33}.
+0162   00B3           00616     movwf 0xB3              ; B3 = y1
+                      00617 
+                      00618     ; Ustaw okno LCD
+0163   302A           00619     movlw 0x2A
+0164   238F           00620     call  LCD_CMD
+0165   3000           00621     movlw 0x00
+0166   2392           00622     call  LCD_DAT
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x30}.
+0167   0830           00623     movf  0xB0, W
+0168   2392           00624     call  LCD_DAT
+0169   3000           00625     movlw 0x00
+016A   2392           00626     call  LCD_DAT
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x31}.
+016B   0831           00627     movf  0xB1, W
+016C   2392           00628     call  LCD_DAT
+                      00629 
+016D   302B           00630     movlw 0x2B
+016E   238F           00631     call  LCD_CMD
+016F   3000           00632     movlw 0x00
+0170   2392           00633     call  LCD_DAT
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x32}.
+0171   0832           00634     movf  0xB2, W
+0172   2392           00635     call  LCD_DAT
+0173   3000           00636     movlw 0x00
+0174   2392           00637     call  LCD_DAT
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x33}.
+0175   0833           00638     movf  0xB3, W
+0176   2392           00639     call  LCD_DAT
+                      00640 
+gpasm-1.4.0 #1107 (Jan  1 2021) project_worki   5-6-2026  10:54:32          PAGE 14
+
+
+LOC    OBJECT CODE    LINE  SOURCE TEXT
+  VALUE
+
+0177   302C           00641     movlw 0x2C
+0178   238F           00642     call  LCD_CMD
+0179   1487           00643     bsf   PORTC, 1
+017A   1107           00644     bcf   PORTC, 2
+                      00645 
+017B   3012           00646     movlw d'18'
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x34}.
+017C   00B4           00647     movwf 0xB4
+017D                  00648 DT_ROW:
+017D   3012           00649     movlw d'18'
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x35}.
+017E   00B5           00650     movwf 0xB5
+017F                  00651 DT_COL:
+017F   118C           00652     bcf   PIR1, 3
+0180   0868           00653     movf  0x68, W
+0181   0093           00654     movwf SSPBUF
+0182                  00655 DT_W1:
+0182   1D8C           00656     btfss PIR1, 3
+0183   2982           00657     goto  DT_W1
+0184   118C           00658     bcf   PIR1, 3
+0185   0869           00659     movf  0x69, W
+0186   0093           00660     movwf SSPBUF
+0187                  00661 DT_W2:
+0187   1D8C           00662     btfss PIR1, 3
+0188   2987           00663     goto  DT_W2
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x35}.
+0189   0BB5           00664     decfsz 0xB5, F
+018A   297F           00665     goto  DT_COL
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x34}.
+018B   0BB4           00666     decfsz 0xB4, F
+018C   297D           00667     goto  DT_ROW
+                      00668 
+018D   1507           00669     bsf   PORTC, 2
+018E   0008           00670     return
+                      00671 
+                      00672 ; =============================================================================
+                      00673 ; DRAW_CURSOR - białe obramowanie 18x18, wnętrze 14x14 z właściwym kolorem
+                      00674 ; Pozycja z 0x50/0x51
+                      00675 ; =============================================================================
+018F                  00676 DRAW_CURSOR:
+018F   0850           00677     movf  0x50, W
+0190   00E0           00678     movwf 0x60
+0191   0851           00679     movf  0x51, W
+0192   00E1           00680     movwf 0x61
+                      00681 
+                      00682     ; Narysuj biały kafelek (obramowanie)
+0193   30FF           00683     movlw 0xFF
+0194   00E8           00684     movwf 0x68
+0195   00E9           00685     movwf 0x69
+0196   213F           00686     call  DRAW_TILE
+                      00687 
+                      00688     ; Oblicz kolor wnętrza
+0197   21E8           00689     call  GET_INNER_COLOR    ; wynik w 0x68/0x69
+gpasm-1.4.0 #1107 (Jan  1 2021) project_worki   5-6-2026  10:54:32          PAGE 15
+
+
+LOC    OBJECT CODE    LINE  SOURCE TEXT
+  VALUE
+
+                      00690 
+                      00691     ; Przelicz współrzędne wnętrza: x0+2, y0+2, x0+15, y0+15
+                      00692     ; Ponownie oblicz x0 dla 0x50
+0198   0860           00693     movf  0x60, W
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x30}.
+0199   00B0           00694     movwf 0xB0
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x30}.
+019A   0E30           00695     swapf 0xB0, W
+019B   39F0           00696     andlw 0xF0
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x30}.
+019C   00B0           00697     movwf 0xB0
+                      00698 
+019D   0860           00699     movf  0x60, W
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x34}.
+019E   00B4           00700     movwf 0xB4
+019F   1003           00701     bcf   STATUS, C
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x34}.
+01A0   0DB4           00702     rlf   0xB4, F
+01A1   1003           00703     bcf   STATUS, C
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x34}.
+01A2   0DB4           00704     rlf   0xB4, F
+                      00705 
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x34}.
+01A3   0834           00706     movf  0xB4, W
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x30}.
+01A4   07B0           00707     addwf 0xB0, F
+01A5   300C           00708     movlw d'12'             ; 10+2
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x30}.
+01A6   07B0           00709     addwf 0xB0, F           ; B0 = x0_inner
+                      00710 
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x30}.
+01A7   0830           00711     movf  0xB0, W
+01A8   3E0D           00712     addlw d'13'             ; 14px szeroki
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x31}.
+01A9   00B1           00713     movwf 0xB1
+                      00714 
+01AA   0861           00715     movf  0x61, W
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x32}.
+01AB   00B2           00716     movwf 0xB2
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x32}.
+01AC   0E32           00717     swapf 0xB2, W
+01AD   39F0           00718     andlw 0xF0
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x32}.
+01AE   00B2           00719     movwf 0xB2
+                      00720 
+01AF   0861           00721     movf  0x61, W
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x34}.
+01B0   00B4           00722     movwf 0xB4
+01B1   1003           00723     bcf   STATUS, C
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x34}.
+01B2   0DB4           00724     rlf   0xB4, F
+01B3   1003           00725     bcf   STATUS, C
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x34}.
+gpasm-1.4.0 #1107 (Jan  1 2021) project_worki   5-6-2026  10:54:32          PAGE 16
+
+
+LOC    OBJECT CODE    LINE  SOURCE TEXT
+  VALUE
+
+01B4   0DB4           00726     rlf   0xB4, F
+                      00727 
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x34}.
+01B5   0834           00728     movf  0xB4, W
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x32}.
+01B6   07B2           00729     addwf 0xB2, F
+01B7   300C           00730     movlw d'12'
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x32}.
+01B8   07B2           00731     addwf 0xB2, F           ; B2 = y0_inner
+                      00732 
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x32}.
+01B9   0832           00733     movf  0xB2, W
+01BA   3E0D           00734     addlw d'13'
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x33}.
+01BB   00B3           00735     movwf 0xB3
+                      00736 
+                      00737     ; Wyślij okno wewnętrzne
+01BC   302A           00738     movlw 0x2A
+01BD   238F           00739     call  LCD_CMD
+01BE   3000           00740     movlw 0x00
+01BF   2392           00741     call  LCD_DAT
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x30}.
+01C0   0830           00742     movf  0xB0, W
+01C1   2392           00743     call  LCD_DAT
+01C2   3000           00744     movlw 0x00
+01C3   2392           00745     call  LCD_DAT
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x31}.
+01C4   0831           00746     movf  0xB1, W
+01C5   2392           00747     call  LCD_DAT
+                      00748 
+01C6   302B           00749     movlw 0x2B
+01C7   238F           00750     call  LCD_CMD
+01C8   3000           00751     movlw 0x00
+01C9   2392           00752     call  LCD_DAT
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x32}.
+01CA   0832           00753     movf  0xB2, W
+01CB   2392           00754     call  LCD_DAT
+01CC   3000           00755     movlw 0x00
+01CD   2392           00756     call  LCD_DAT
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x33}.
+01CE   0833           00757     movf  0xB3, W
+01CF   2392           00758     call  LCD_DAT
+                      00759 
+01D0   302C           00760     movlw 0x2C
+01D1   238F           00761     call  LCD_CMD
+01D2   1487           00762     bsf   PORTC, 1
+01D3   1107           00763     bcf   PORTC, 2
+                      00764 
+01D4   300E           00765     movlw d'14'
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x34}.
+01D5   00B4           00766     movwf 0xB4
+01D6                  00767 DC_ROW:
+01D6   300E           00768     movlw d'14'
+gpasm-1.4.0 #1107 (Jan  1 2021) project_worki   5-6-2026  10:54:32          PAGE 17
+
+
+LOC    OBJECT CODE    LINE  SOURCE TEXT
+  VALUE
+
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x35}.
+01D7   00B5           00769     movwf 0xB5
+01D8                  00770 DC_COL:
+01D8   118C           00771     bcf   PIR1, 3
+01D9   0868           00772     movf  0x68, W
+01DA   0093           00773     movwf SSPBUF
+01DB                  00774 DC_W1:
+01DB   1D8C           00775     btfss PIR1, 3
+01DC   29DB           00776     goto  DC_W1
+01DD   118C           00777     bcf   PIR1, 3
+01DE   0869           00778     movf  0x69, W
+01DF   0093           00779     movwf SSPBUF
+01E0                  00780 DC_W2:
+01E0   1D8C           00781     btfss PIR1, 3
+01E1   29E0           00782     goto  DC_W2
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x35}.
+01E2   0BB5           00783     decfsz 0xB5, F
+01E3   29D8           00784     goto  DC_COL
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x34}.
+01E4   0BB4           00785     decfsz 0xB4, F
+01E5   29D6           00786     goto  DC_ROW
+                      00787 
+01E6   1507           00788     bsf   PORTC, 2
+01E7   0008           00789     return
+                      00790 
+                      00791 ; =============================================================================
+                      00792 ; GET_INNER_COLOR - kolor wnętrza dla (0x60, 0x61), wynik w 0x68/0x69
+                      00793 ; =============================================================================
+01E8                  00794 GET_INNER_COLOR:
+01E8   303A           00795     movlw LAYER_REV
+01E9   00E2           00796     movwf 0x62
+01EA   2096           00797     call  GET_BIT
+01EB   08E3           00798     movf  0x63, F
+01EC   1D03           00799     btfss STATUS, Z
+01ED   29FE           00800     goto  GIC_REV
+                      00801 
+01EE   302D           00802     movlw LAYER_FLAG
+01EF   00E2           00803     movwf 0x62
+01F0   2096           00804     call  GET_BIT
+01F1   08E3           00805     movf  0x63, F
+01F2   1D03           00806     btfss STATUS, Z
+01F3   29F9           00807     goto  GIC_FLAG
+                      00808 
+                      00809     ; Zakryte: ciemny szary (ciemniejszy niż normalny szary)
+01F4   3052           00810     movlw 0x52
+01F5   00E8           00811     movwf 0x68
+01F6   308A           00812     movlw 0x8A
+01F7   00E9           00813     movwf 0x69
+01F8   0008           00814     return
+                      00815 
+01F9                  00816 GIC_FLAG:
+01F9   30FF           00817     movlw 0xFF
+01FA   00E8           00818     movwf 0x68
+gpasm-1.4.0 #1107 (Jan  1 2021) project_worki   5-6-2026  10:54:32          PAGE 18
+
+
+LOC    OBJECT CODE    LINE  SOURCE TEXT
+  VALUE
+
+01FB   30E0           00819     movlw 0xE0
+01FC   00E9           00820     movwf 0x69
+01FD   0008           00821     return
+                      00822 
+01FE                  00823 GIC_REV:
+01FE   20A6           00824     call  COUNT_NEIGHBORS
+01FF   20DC           00825     call  GET_COLOR
+0200   0008           00826     return
+                      00827 
+                      00828 ; =============================================================================
+                      00829 ; READ_BUTTONS
+                      00830 ; =============================================================================
+0201                  00831 READ_BUTTONS:
+                      00832     ; Gra skończona? Reaguj tylko na RESTART
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x22}.
+0201   08A2           00833     movf  0xA2, F
+0202   1D03           00834     btfss STATUS, Z
+0203   2A4D           00835     goto  RB_GAME_OVER
+                      00836 
+0204   0806           00837     movf  PORTB, W
+0205   00F3           00838     movwf 0x73
+                      00839 
+                      00840     ; RESTART (RB6)
+0206   1F73           00841     btfss 0x73, 6
+0207   2B5A           00842     goto  DO_RESTART
+                      00843 
+                      00844     ; UP (RB0)
+0208   1873           00845     btfsc 0x73, 0
+0209   2A16           00846     goto  RB_NOT_UP
+020A   08D1           00847     movf  0x51, F
+020B   1903           00848     btfsc STATUS, Z
+020C   2A16           00849     goto  RB_NOT_UP
+020D   0850           00850     movf  0x50, W
+020E   00E0           00851     movwf 0x60
+020F   0851           00852     movf  0x51, W
+0210   00E1           00853     movwf 0x61
+0211   2125           00854     call  DRAW_TILE_STATE
+0212   03D1           00855     decf  0x51, F
+0213   218F           00856     call  DRAW_CURSOR
+0214   239A           00857     call  DEBOUNCE
+0215   0008           00858     return
+0216                  00859 RB_NOT_UP:
+                      00860 
+                      00861     ; DOWN (RB1)
+0216   18F3           00862     btfsc 0x73, 1
+0217   2A25           00863     goto  RB_NOT_DOWN
+0218   3009           00864     movlw d'9'
+0219   0251           00865     subwf 0x51, W
+021A   1903           00866     btfsc STATUS, Z
+021B   2A25           00867     goto  RB_NOT_DOWN
+021C   0850           00868     movf  0x50, W
+021D   00E0           00869     movwf 0x60
+021E   0851           00870     movf  0x51, W
+gpasm-1.4.0 #1107 (Jan  1 2021) project_worki   5-6-2026  10:54:32          PAGE 19
+
+
+LOC    OBJECT CODE    LINE  SOURCE TEXT
+  VALUE
+
+021F   00E1           00871     movwf 0x61
+0220   2125           00872     call  DRAW_TILE_STATE
+0221   0AD1           00873     incf  0x51, F
+0222   218F           00874     call  DRAW_CURSOR
+0223   239A           00875     call  DEBOUNCE
+0224   0008           00876     return
+0225                  00877 RB_NOT_DOWN:
+                      00878 
+                      00879     ; LEFT (RB2)
+0225   1973           00880     btfsc 0x73, 2
+0226   2A33           00881     goto  RB_NOT_LEFT
+0227   08D0           00882     movf  0x50, F
+0228   1903           00883     btfsc STATUS, Z
+0229   2A33           00884     goto  RB_NOT_LEFT
+022A   0850           00885     movf  0x50, W
+022B   00E0           00886     movwf 0x60
+022C   0851           00887     movf  0x51, W
+022D   00E1           00888     movwf 0x61
+022E   2125           00889     call  DRAW_TILE_STATE
+022F   03D0           00890     decf  0x50, F
+0230   218F           00891     call  DRAW_CURSOR
+0231   239A           00892     call  DEBOUNCE
+0232   0008           00893     return
+0233                  00894 RB_NOT_LEFT:
+                      00895 
+                      00896     ; RIGHT (RB3)
+0233   19F3           00897     btfsc 0x73, 3
+0234   2A42           00898     goto  RB_NOT_RIGHT
+0235   3009           00899     movlw d'9'
+0236   0250           00900     subwf 0x50, W
+0237   1903           00901     btfsc STATUS, Z
+0238   2A42           00902     goto  RB_NOT_RIGHT
+0239   0850           00903     movf  0x50, W
+023A   00E0           00904     movwf 0x60
+023B   0851           00905     movf  0x51, W
+023C   00E1           00906     movwf 0x61
+023D   2125           00907     call  DRAW_TILE_STATE
+023E   0AD0           00908     incf  0x50, F
+023F   218F           00909     call  DRAW_CURSOR
+0240   239A           00910     call  DEBOUNCE
+0241   0008           00911     return
+0242                  00912 RB_NOT_RIGHT:
+                      00913 
+                      00914     ; REVEAL (RB4)
+0242   1A73           00915     btfsc 0x73, 4
+0243   2A47           00916     goto  RB_NOT_REVEAL
+0244   2250           00917     call  DO_REVEAL
+0245   239A           00918     call  DEBOUNCE
+0246   0008           00919     return
+0247                  00920 RB_NOT_REVEAL:
+                      00921 
+                      00922     ; FLAG (RB5)
+0247   1AF3           00923     btfsc 0x73, 5
+gpasm-1.4.0 #1107 (Jan  1 2021) project_worki   5-6-2026  10:54:32          PAGE 20
+
+
+LOC    OBJECT CODE    LINE  SOURCE TEXT
+  VALUE
+
+0248   2A4C           00924     goto  RB_NOT_FLAG
+0249   2273           00925     call  DO_FLAG
+024A   239A           00926     call  DEBOUNCE
+024B   0008           00927     return
+024C                  00928 RB_NOT_FLAG:
+024C   0008           00929     return
+                      00930 
+024D                  00931 RB_GAME_OVER:
+024D   1F06           00932     btfss PORTB, 6
+024E   235A           00933     call  DO_RESTART
+024F   0008           00934     return
+                      00935 
+                      00936 ; =============================================================================
+                      00937 ; DO_REVEAL - odkryj pole pod kursorem
+                      00938 ; =============================================================================
+0250                  00939 DO_REVEAL:
+0250   0850           00940     movf  0x50, W
+0251   00E0           00941     movwf 0x60
+0252   0851           00942     movf  0x51, W
+0253   00E1           00943     movwf 0x61
+                      00944 
+                      00945     ; Ma flagę? -> ignoruj
+0254   302D           00946     movlw LAYER_FLAG
+0255   00E2           00947     movwf 0x62
+0256   2096           00948     call  GET_BIT
+0257   08E3           00949     movf  0x63, F
+0258   1D03           00950     btfss STATUS, Z
+0259   0008           00951     return
+                      00952 
+                      00953     ; Już odkryte? -> ignoruj
+025A   303A           00954     movlw LAYER_REV
+025B   00E2           00955     movwf 0x62
+025C   2096           00956     call  GET_BIT
+025D   08E3           00957     movf  0x63, F
+025E   1D03           00958     btfss STATUS, Z
+025F   0008           00959     return
+                      00960 
+                      00961     ; Mina?
+0260   3020           00962     movlw LAYER_MINE
+0261   00E2           00963     movwf 0x62
+0262   2096           00964     call  GET_BIT
+0263   08E3           00965     movf  0x63, F
+0264   1D03           00966     btfss STATUS, Z
+0265   2A6E           00967     goto  DR_MINE
+                      00968 
+                      00969     ; Bezpieczne - flood fill
+0266   2282           00970     call  FLOOD_FILL
+0267   2314           00971     call  CHECK_WIN
+                      00972     ; Odśwież kursor po flood fill
+0268   0850           00973     movf  0x50, W
+0269   00E0           00974     movwf 0x60
+026A   0851           00975     movf  0x51, W
+026B   00E1           00976     movwf 0x61
+gpasm-1.4.0 #1107 (Jan  1 2021) project_worki   5-6-2026  10:54:32          PAGE 21
+
+
+LOC    OBJECT CODE    LINE  SOURCE TEXT
+  VALUE
+
+026C   218F           00977     call  DRAW_CURSOR
+026D   0008           00978     return
+                      00979 
+026E                  00980 DR_MINE:
+026E   3002           00981     movlw 0x02
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x22}.
+026F   00A2           00982     movwf 0xA2              ; stan = przegrana
+0270   232C           00983     call  REVEAL_ALL_MINES
+0271   2344           00984     call  BLINK_MINE        ; mignij na polu miny
+0272   0008           00985     return
+                      00986 
+                      00987 ; =============================================================================
+                      00988 ; DO_FLAG
+                      00989 ; =============================================================================
+0273                  00990 DO_FLAG:
+0273   0850           00991     movf  0x50, W
+0274   00E0           00992     movwf 0x60
+0275   0851           00993     movf  0x51, W
+0276   00E1           00994     movwf 0x61
+                      00995 
+                      00996     ; Nie flaguj odkrytego
+0277   303A           00997     movlw LAYER_REV
+0278   00E2           00998     movwf 0x62
+0279   2096           00999     call  GET_BIT
+027A   08E3           01000     movf  0x63, F
+027B   1D03           01001     btfss STATUS, Z
+027C   0008           01002     return
+                      01003 
+027D   302D           01004     movlw LAYER_FLAG
+027E   00E2           01005     movwf 0x62
+027F   20A2           01006     call  XOR_BIT
+                      01007 
+                      01008     ; Przerysuj z kursorem (kursor jest w tej samej pozycji)
+0280   218F           01009     call  DRAW_CURSOR
+0281   0008           01010     return
+                      01011 
+                      01012 ; =============================================================================
+                      01013 ; FLOOD_FILL - iteracyjny BFS od (0x60, 0x61)
+                      01014 ; =============================================================================
+0282                  01015 FLOOD_FILL:
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x20}.
+0282   01A0           01016     clrf  0xA0              ; wyczyść stos BFS
+                      01017 
+                      01018     ; Odkryj pole startowe
+0283   22A4           01019     call  FF_REVEAL_CELL
+                      01020     ; 0x70 = liczba sąsiadów (lub 0xFF jeśli pominięto)
+0284   30FF           01021     movlw 0xFF
+0285   0270           01022     subwf 0x70, W
+0286   1903           01023     btfsc STATUS, Z
+0287   0008           01024     return                  ; Pominięto (już odkryte/flaga/mina)
+0288   08F0           01025     movf  0x70, F
+0289   1D03           01026     btfss STATUS, Z
+028A   0008           01027     return                  ; Ma sąsiadów-miny - nie rozszerzaj
+gpasm-1.4.0 #1107 (Jan  1 2021) project_worki   5-6-2026  10:54:32          PAGE 22
+
+
+LOC    OBJECT CODE    LINE  SOURCE TEXT
+  VALUE
+
+                      01028 
+                      01029     ; 0 sąsiadów: wrzuć sąsiadów startowego na stos
+028B   22C1           01030     call  FF_PUSH_NEIGHBORS
+                      01031 
+028C                  01032 FF_LOOP:
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x20}.
+028C   08A0           01033     movf  0xA0, F
+028D   1903           01034     btfsc STATUS, Z
+028E   0008           01035     return                  ; Stos pusty - gotowe
+                      01036 
+                      01037     ; Pop
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x20}.
+028F   03A0           01038     decf  0xA0, F
+                      01039 
+0290   3080           01040     movlw 0x80
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x20}.
+0291   0720           01041     addwf 0xA0, W
+0292   0084           01042     movwf FSR
+0293   0800           01043     movf  INDF, W
+0294   00E0           01044     movwf 0x60
+                      01045 
+0295   3090           01046     movlw 0x90
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x20}.
+0296   0720           01047     addwf 0xA0, W
+0297   0084           01048     movwf FSR
+0298   0800           01049     movf  INDF, W
+0299   00E1           01050     movwf 0x61
+                      01051 
+029A   22A4           01052     call  FF_REVEAL_CELL
+029B   30FF           01053     movlw 0xFF
+029C   0270           01054     subwf 0x70, W
+029D   1903           01055     btfsc STATUS, Z
+029E   2A8C           01056     goto  FF_LOOP           ; Pominięto
+029F   08F0           01057     movf  0x70, F
+02A0   1D03           01058     btfss STATUS, Z
+02A1   2A8C           01059     goto  FF_LOOP           ; Ma sąsiadów
+                      01060 
+02A2   22C1           01061     call  FF_PUSH_NEIGHBORS
+02A3   2A8C           01062     goto  FF_LOOP
+                      01063 
+                      01064 ; =============================================================================
+                      01065 ; FF_REVEAL_CELL - odkrywa (0x60, 0x61)
+                      01066 ; Wynik: 0x70 = liczba sąsiadów, lub 0xFF = pominięto
+                      01067 ; =============================================================================
+02A4                  01068 FF_REVEAL_CELL:
+                      01069     ; Już odkryte?
+02A4   303A           01070     movlw LAYER_REV
+02A5   00E2           01071     movwf 0x62
+02A6   2096           01072     call  GET_BIT
+02A7   08E3           01073     movf  0x63, F
+02A8   1D03           01074     btfss STATUS, Z
+02A9   2ABE           01075     goto  FRC_SKIP
+                      01076 
+gpasm-1.4.0 #1107 (Jan  1 2021) project_worki   5-6-2026  10:54:32          PAGE 23
+
+
+LOC    OBJECT CODE    LINE  SOURCE TEXT
+  VALUE
+
+                      01077     ; Flagowane?
+02AA   302D           01078     movlw LAYER_FLAG
+02AB   00E2           01079     movwf 0x62
+02AC   2096           01080     call  GET_BIT
+02AD   08E3           01081     movf  0x63, F
+02AE   1D03           01082     btfss STATUS, Z
+02AF   2ABE           01083     goto  FRC_SKIP
+                      01084 
+                      01085     ; Mina?
+02B0   3020           01086     movlw LAYER_MINE
+02B1   00E2           01087     movwf 0x62
+02B2   2096           01088     call  GET_BIT
+02B3   08E3           01089     movf  0x63, F
+02B4   1D03           01090     btfss STATUS, Z
+02B5   2ABE           01091     goto  FRC_SKIP
+                      01092 
+                      01093     ; Odkryj
+02B6   303A           01094     movlw LAYER_REV
+02B7   00E2           01095     movwf 0x62
+02B8   209E           01096     call  SET_BIT
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x21}.
+02B9   0AA1           01097     incf  0xA1, F
+                      01098 
+02BA   20A6           01099     call  COUNT_NEIGHBORS   ; wynik w 0x70
+02BB   20DC           01100     call  GET_COLOR         ; wynik w 0x68/0x69
+02BC   213F           01101     call  DRAW_TILE
+02BD   0008           01102     return
+                      01103 
+02BE                  01104 FRC_SKIP:
+02BE   30FF           01105     movlw 0xFF
+02BF   00F0           01106     movwf 0x70
+02C0   0008           01107     return
+                      01108 
+                      01109 ; =============================================================================
+                      01110 ; FF_PUSH_NEIGHBORS - wrzuca sąsiadów (0x60, 0x61) na stos
+                      01111 ; Scratch izolowany: 0xC0-0xC5
+                      01112 ; =============================================================================
+02C1                  01113 FF_PUSH_NEIGHBORS:
+02C1   0860           01114     movf  0x60, W
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x40}.
+02C2   00C0           01115     movwf 0xC0
+02C3   0861           01116     movf  0x61, W
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x41}.
+02C4   00C1           01117     movwf 0xC1
+                      01118 
+02C5   30FF           01119     movlw 0xFF
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x43}.
+02C6   00C3           01120     movwf 0xC3              ; DY = -1
+02C7                  01121 FFPN_Y:
+02C7   30FF           01122     movlw 0xFF
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x42}.
+02C8   00C2           01123     movwf 0xC2              ; DX = -1
+02C9                  01124 FFPN_X:
+gpasm-1.4.0 #1107 (Jan  1 2021) project_worki   5-6-2026  10:54:32          PAGE 24
+
+
+LOC    OBJECT CODE    LINE  SOURCE TEXT
+  VALUE
+
+                      01125     ; Pomiń centrum
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x42}.
+02C9   08C2           01126     movf  0xC2, F
+02CA   1D03           01127     btfss STATUS, Z
+02CB   2AD0           01128     goto  FFPN_CALC
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x43}.
+02CC   08C3           01129     movf  0xC3, F
+02CD   1D03           01130     btfss STATUS, Z
+02CE   2AD0           01131     goto  FFPN_CALC
+02CF   2B09           01132     goto  FFPN_NX
+                      01133 
+02D0                  01134 FFPN_CALC:
+                      01135     ; candX = cX + DX
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x40}.
+02D0   0840           01136     movf  0xC0, W
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x42}.
+02D1   0742           01137     addwf 0xC2, W
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x44}.
+02D2   00C4           01138     movwf 0xC4
+02D3   300A           01139     movlw BOARD_W
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x44}.
+02D4   0244           01140     subwf 0xC4, W
+02D5   1803           01141     btfsc STATUS, C
+02D6   2B09           01142     goto  FFPN_NX           ; poza planszą
+                      01143 
+                      01144     ; candY = cY + DY
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x41}.
+02D7   0841           01145     movf  0xC1, W
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x43}.
+02D8   0743           01146     addwf 0xC3, W
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x45}.
+02D9   00C5           01147     movwf 0xC5
+02DA   300A           01148     movlw BOARD_H
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x45}.
+02DB   0245           01149     subwf 0xC5, W
+02DC   1803           01150     btfsc STATUS, C
+02DD   2B09           01151     goto  FFPN_NX
+                      01152 
+                      01153     ; Odkryte?
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x44}.
+02DE   0844           01154     movf  0xC4, W
+02DF   00E0           01155     movwf 0x60
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x45}.
+02E0   0845           01156     movf  0xC5, W
+02E1   00E1           01157     movwf 0x61
+02E2   303A           01158     movlw LAYER_REV
+02E3   00E2           01159     movwf 0x62
+02E4   2096           01160     call  GET_BIT
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x40}.
+02E5   0840           01161     movf  0xC0, W
+02E6   00E0           01162     movwf 0x60
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x41}.
+02E7   0841           01163     movf  0xC1, W
+gpasm-1.4.0 #1107 (Jan  1 2021) project_worki   5-6-2026  10:54:32          PAGE 25
+
+
+LOC    OBJECT CODE    LINE  SOURCE TEXT
+  VALUE
+
+02E8   00E1           01164     movwf 0x61
+02E9   08E3           01165     movf  0x63, F
+02EA   1D03           01166     btfss STATUS, Z
+02EB   2B09           01167     goto  FFPN_NX           ; Już odkryte
+                      01168 
+                      01169     ; Mina?
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x44}.
+02EC   0844           01170     movf  0xC4, W
+02ED   00E0           01171     movwf 0x60
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x45}.
+02EE   0845           01172     movf  0xC5, W
+02EF   00E1           01173     movwf 0x61
+02F0   3020           01174     movlw LAYER_MINE
+02F1   00E2           01175     movwf 0x62
+02F2   2096           01176     call  GET_BIT
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x40}.
+02F3   0840           01177     movf  0xC0, W
+02F4   00E0           01178     movwf 0x60
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x41}.
+02F5   0841           01179     movf  0xC1, W
+02F6   00E1           01180     movwf 0x61
+02F7   08E3           01181     movf  0x63, F
+02F8   1D03           01182     btfss STATUS, Z
+02F9   2B09           01183     goto  FFPN_NX           ; Mina
+                      01184 
+                      01185     ; Stos pełny?
+02FA   3010           01186     movlw d'16'
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x20}.
+02FB   0220           01187     subwf 0xA0, W
+02FC   1803           01188     btfsc STATUS, C
+02FD   2B09           01189     goto  FFPN_NX
+                      01190 
+                      01191     ; Push
+02FE   3080           01192     movlw 0x80
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x20}.
+02FF   0720           01193     addwf 0xA0, W
+0300   0084           01194     movwf FSR
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x44}.
+0301   0844           01195     movf  0xC4, W
+0302   0080           01196     movwf INDF
+                      01197 
+0303   3090           01198     movlw 0x90
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x20}.
+0304   0720           01199     addwf 0xA0, W
+0305   0084           01200     movwf FSR
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x45}.
+0306   0845           01201     movf  0xC5, W
+0307   0080           01202     movwf INDF
+                      01203 
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x20}.
+0308   0AA0           01204     incf  0xA0, F
+                      01205 
+0309                  01206 FFPN_NX:
+gpasm-1.4.0 #1107 (Jan  1 2021) project_worki   5-6-2026  10:54:32          PAGE 26
+
+
+LOC    OBJECT CODE    LINE  SOURCE TEXT
+  VALUE
+
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x42}.
+0309   0AC2           01207     incf  0xC2, F
+030A   3002           01208     movlw 0x02
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x42}.
+030B   0242           01209     subwf 0xC2, W
+030C   1D03           01210     btfss STATUS, Z
+030D   2AC9           01211     goto  FFPN_X
+030E                  01212 FFPN_NY:
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x43}.
+030E   0AC3           01213     incf  0xC3, F
+030F   3002           01214     movlw 0x02
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x43}.
+0310   0243           01215     subwf 0xC3, W
+0311   1D03           01216     btfss STATUS, Z
+0312   2AC7           01217     goto  FFPN_Y
+0313   0008           01218     return
+                      01219 
+                      01220 ; =============================================================================
+                      01221 ; CHECK_WIN
+                      01222 ; =============================================================================
+0314                  01223 CHECK_WIN:
+0314   3050           01224     movlw WIN_COUNT
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x21}.
+0315   0221           01225     subwf 0xA1, W
+0316   1D03           01226     btfss STATUS, Z
+0317   0008           01227     return
+                      01228     ; Wygrana - zamaluj planszę zielono
+0318   3001           01229     movlw 0x01
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x22}.
+0319   00A2           01230     movwf 0xA2
+031A   01E0           01231     clrf  0x60
+031B                  01232 CW_X:
+031B   01E1           01233     clrf  0x61
+031C                  01234 CW_Y:
+031C   3007           01235     movlw 0x07
+031D   00E8           01236     movwf 0x68
+031E   30E0           01237     movlw 0xE0
+031F   00E9           01238     movwf 0x69
+0320   213F           01239     call  DRAW_TILE
+0321   0AE1           01240     incf  0x61, F
+0322   300A           01241     movlw BOARD_H
+0323   0261           01242     subwf 0x61, W
+0324   1D03           01243     btfss STATUS, Z
+0325   2B1C           01244     goto  CW_Y
+0326   0AE0           01245     incf  0x60, F
+0327   300A           01246     movlw BOARD_W
+0328   0260           01247     subwf 0x60, W
+0329   1D03           01248     btfss STATUS, Z
+032A   2B1B           01249     goto  CW_X
+032B   0008           01250     return
+                      01251 
+                      01252 ; =============================================================================
+                      01253 ; REVEAL_ALL_MINES - pokaż wszystkie miny czerwono
+gpasm-1.4.0 #1107 (Jan  1 2021) project_worki   5-6-2026  10:54:32          PAGE 27
+
+
+LOC    OBJECT CODE    LINE  SOURCE TEXT
+  VALUE
+
+                      01254 ; =============================================================================
+032C                  01255 REVEAL_ALL_MINES:
+032C   01E0           01256     clrf  0x60
+032D                  01257 RAM_X:
+032D   01E1           01258     clrf  0x61
+032E                  01259 RAM_Y:
+032E   3020           01260     movlw LAYER_MINE
+032F   00E2           01261     movwf 0x62
+0330   2096           01262     call  GET_BIT
+0331   08E3           01263     movf  0x63, F
+0332   1903           01264     btfsc STATUS, Z
+0333   2B39           01265     goto  RAM_NEXT
+0334   30F8           01266     movlw 0xF8
+0335   00E8           01267     movwf 0x68
+0336   3000           01268     movlw 0x00
+0337   00E9           01269     movwf 0x69
+0338   213F           01270     call  DRAW_TILE
+0339                  01271 RAM_NEXT:
+0339   0AE1           01272     incf  0x61, F
+033A   300A           01273     movlw BOARD_H
+033B   0261           01274     subwf 0x61, W
+033C   1D03           01275     btfss STATUS, Z
+033D   2B2E           01276     goto  RAM_Y
+033E   0AE0           01277     incf  0x60, F
+033F   300A           01278     movlw BOARD_W
+0340   0260           01279     subwf 0x60, W
+0341   1D03           01280     btfss STATUS, Z
+0342   2B2D           01281     goto  RAM_X
+0343   0008           01282     return
+                      01283 
+                      01284 ; =============================================================================
+                      01285 ; BLINK_MINE - miga czerwono/biało na polu kursora 3 razy
+                      01286 ; =============================================================================
+0344                  01287 BLINK_MINE:
+0344   3003           01288     movlw d'3'
+0345   00F5           01289     movwf 0x75
+0346                  01290 BM_LOOP:
+0346   0850           01291     movf  0x50, W
+0347   00E0           01292     movwf 0x60
+0348   0851           01293     movf  0x51, W
+0349   00E1           01294     movwf 0x61
+034A   30FF           01295     movlw 0xFF
+034B   00E8           01296     movwf 0x68
+034C   00E9           01297     movwf 0x69
+034D   213F           01298     call  DRAW_TILE
+034E   23A1           01299     call  DELAY_20MS
+034F   23A1           01300     call  DELAY_20MS
+0350   30F8           01301     movlw 0xF8
+0351   00E8           01302     movwf 0x68
+0352   3000           01303     movlw 0x00
+0353   00E9           01304     movwf 0x69
+0354   213F           01305     call  DRAW_TILE
+0355   23A1           01306     call  DELAY_20MS
+gpasm-1.4.0 #1107 (Jan  1 2021) project_worki   5-6-2026  10:54:32          PAGE 28
+
+
+LOC    OBJECT CODE    LINE  SOURCE TEXT
+  VALUE
+
+0356   23A1           01307     call  DELAY_20MS
+0357   0BF5           01308     decfsz 0x75, F
+0358   2B46           01309     goto  BM_LOOP
+0359   0008           01310     return
+                      01311 
+                      01312 ; =============================================================================
+                      01313 ; DO_RESTART
+                      01314 ; =============================================================================
+035A                  01315 DO_RESTART:
+                      01316     ; Czekaj aż zwolniony
+035A                  01317 DR_WAIT:
+035A   1F06           01318     btfss PORTB, 6
+035B   2B5A           01319     goto  DR_WAIT
+035C   23A1           01320     call  DELAY_20MS
+035D   1F06           01321     btfss PORTB, 6
+035E   2B5A           01322     goto  DR_WAIT
+035F   202E           01323     call  GAME_INIT
+0360   0008           01324     return
+                      01325 
+                      01326 ; =============================================================================
+                      01327 ; LCD_FULL_BLACK
+                      01328 ; =============================================================================
+0361                  01329 LCD_FULL_BLACK:
+0361   302A           01330     movlw 0x2A
+0362   238F           01331     call  LCD_CMD
+0363   3000           01332     movlw 0x00
+0364   2392           01333     call  LCD_DAT
+0365   2392           01334     call  LCD_DAT
+0366   3000           01335     movlw 0x00
+0367   2392           01336     call  LCD_DAT
+0368   30EF           01337     movlw 0xEF
+0369   2392           01338     call  LCD_DAT
+036A   302B           01339     movlw 0x2B
+036B   238F           01340     call  LCD_CMD
+036C   3000           01341     movlw 0x00
+036D   2392           01342     call  LCD_DAT
+036E   2392           01343     call  LCD_DAT
+036F   3001           01344     movlw 0x01
+0370   2392           01345     call  LCD_DAT
+0371   303F           01346     movlw 0x3F
+0372   2392           01347     call  LCD_DAT
+0373   302C           01348     movlw 0x2C
+0374   238F           01349     call  LCD_CMD
+0375   1487           01350     bsf   PORTC, 1
+0376   1107           01351     bcf   PORTC, 2
+0377   30F0           01352     movlw d'240'
+0378   00FA           01353     movwf 0x7A
+0379                  01354 LFB_Y:
+0379   3004           01355     movlw d'4'
+037A   00FB           01356     movwf 0x7B
+037B                  01357 LFB_XOUT:
+037B   3050           01358     movlw d'80'
+037C   00FC           01359     movwf 0x7C
+gpasm-1.4.0 #1107 (Jan  1 2021) project_worki   5-6-2026  10:54:32          PAGE 29
+
+
+LOC    OBJECT CODE    LINE  SOURCE TEXT
+  VALUE
+
+037D                  01360 LFB_XIN:
+037D   118C           01361     bcf   PIR1, 3
+037E   3000           01362     movlw 0x00
+037F   0093           01363     movwf SSPBUF
+0380                  01364 LFB_W1:
+0380   1D8C           01365     btfss PIR1, 3
+0381   2B80           01366     goto  LFB_W1
+0382   118C           01367     bcf   PIR1, 3
+0383   3000           01368     movlw 0x00
+0384   0093           01369     movwf SSPBUF
+0385                  01370 LFB_W2:
+0385   1D8C           01371     btfss PIR1, 3
+0386   2B85           01372     goto  LFB_W2
+0387   0BFC           01373     decfsz 0x7C, F
+0388   2B7D           01374     goto  LFB_XIN
+0389   0BFB           01375     decfsz 0x7B, F
+038A   2B7B           01376     goto  LFB_XOUT
+038B   0BFA           01377     decfsz 0x7A, F
+038C   2B79           01378     goto  LFB_Y
+038D   1507           01379     bsf   PORTC, 2
+038E   0008           01380     return
+                      01381 
+                      01382 ; =============================================================================
+                      01383 ; LCD_CMD / LCD_DAT / SPI_SEND
+                      01384 ; =============================================================================
+038F                  01385 LCD_CMD:
+038F   1087           01386     bcf   PORTC, 1          ; D/C=0 komenda
+0390   1107           01387     bcf   PORTC, 2          ; CS=0
+0391   2B94           01388     goto  SPI_SEND
+0392                  01389 LCD_DAT:
+0392   1487           01390     bsf   PORTC, 1          ; D/C=1 dane
+0393   1107           01391     bcf   PORTC, 2
+0394                  01392 SPI_SEND:
+0394   118C           01393     bcf   PIR1, 3
+0395   0093           01394     movwf SSPBUF
+0396                  01395 SPI_WAIT:
+0396   1D8C           01396     btfss PIR1, 3
+0397   2B96           01397     goto  SPI_WAIT
+0398   1507           01398     bsf   PORTC, 2
+0399   0008           01399     return
+                      01400 
+                      01401 ; =============================================================================
+                      01402 ; DEBOUNCE - czeka aż wszystkie przyciski zwolnione
+                      01403 ; =============================================================================
+039A                  01404 DEBOUNCE:
+039A   23A1           01405     call  DELAY_20MS
+039B                  01406 DB_WAIT:
+039B   0806           01407     movf  PORTB, W
+039C   397F           01408     andlw b'01111111'       ; bity 0-6
+039D   3A7F           01409     xorlw b'01111111'       ; active-low: zwolnione = 0x7F -> XOR = 0x00
+039E   1D03           01410     btfss STATUS, Z
+039F   2B9B           01411     goto  DB_WAIT
+03A0   0008           01412     return
+gpasm-1.4.0 #1107 (Jan  1 2021) project_worki   5-6-2026  10:54:32          PAGE 30
+
+
+LOC    OBJECT CODE    LINE  SOURCE TEXT
+  VALUE
+
+                      01413 
+                      01414 ; =============================================================================
+                      01415 ; DELAY_20MS (przy 4MHz Fosc)
+                      01416 ; =============================================================================
+03A1                  01417 DELAY_20MS:
+03A1   3064           01418     movlw d'100'
+03A2   00F8           01419     movwf 0x78
+03A3                  01420 DL_OUT:
+03A3   3042           01421     movlw d'66'
+03A4   00F9           01422     movwf 0x79
+03A5                  01423 DL_IN:
+03A5   0BF9           01424     decfsz 0x79, F
+03A6   2BA5           01425     goto  DL_IN
+03A7   0BF8           01426     decfsz 0x78, F
+03A8   2BA3           01427     goto  DL_OUT
+03A9   0008           01428     return
+                      01429 
+                      01430     END
+gpasm-1.4.0 #1107 (Jan  1 2021) project_worki   5-6-2026  10:54:32          PAGE 31
+
+
+SYMBOL TABLE
+  LABEL                             VALUE
+
+ACKDT                             00000005
+ACKEN                             00000004
+ACKSTAT                           00000006
+ADCON0                            0000001F
+ADCON1                            0000009F
+ADCS0                             00000006
+ADCS1                             00000007
+ADCS2                             00000006
+ADDEN                             00000003
+ADFM                              00000007
+ADIE                              00000006
+ADIF                              00000006
+ADON                              00000000
+ADRESH                            0000001E
+ADRESL                            0000009E
+BCLIE                             00000003
+BCLIF                             00000003
+BF                                00000000
+BLINK_MINE                        00000344
+BM_LOOP                           00000346
+BOARD_H                           0000000A
+BOARD_W                           0000000A
+BRGH                              00000002
+C                                 00000000
+C1INV                             00000004
+C1OUT                             00000006
+C2INV                             00000005
+C2OUT                             00000007
+CALC_BIT_ADDR                     00000071
+CBA_DONE                          00000095
+CBA_NO_Y                          0000007C
+CBA_SHIFT                         00000091
+CBA_Y                             00000078
+CCP1CON                           00000017
+CCP1IE                            00000002
+CCP1IF                            00000002
+CCP1M0                            00000000
+CCP1M1                            00000001
+CCP1M2                            00000002
+CCP1M3                            00000003
+CCP1X                             00000005
+CCP1Y                             00000004
+CCP2CON                           0000001D
+CCP2IE                            00000000
+CCP2IF                            00000000
+CCP2M0                            00000000
+CCP2M1                            00000001
+CCP2M2                            00000002
+CCP2M3                            00000003
+CCP2X                             00000005
+CCP2Y                             00000004
+CCPR1                             00000015
+CCPR1H                            00000016
+gpasm-1.4.0 #1107 (Jan  1 2021) project_worki   5-6-2026  10:54:32          PAGE 32
+
+
+SYMBOL TABLE
+  LABEL                             VALUE 
+
+CCPR1L                            00000015
+CCPR2                             0000001B
+CCPR2H                            0000001C
+CCPR2L                            0000001B
+CHECK_WIN                         00000314
+CHS0                              00000003
+CHS1                              00000004
+CHS2                              00000005
+CIS                               00000003
+CKE                               00000006
+CKP                               00000004
+CM0                               00000000
+CM1                               00000001
+CM2                               00000002
+CMCON                             0000009C
+CMIE                              00000006
+CMIF                              00000006
+CN_CALC                           000000B2
+CN_LOOP_X                         000000AB
+CN_LOOP_Y                         000000A9
+CN_NEXT_X                         000000D1
+CN_NEXT_Y                         000000D6
+COUNT_NEIGHBORS                   000000A6
+CREN                              00000004
+CSRC                              00000007
+CVR0                              00000000
+CVR1                              00000001
+CVR2                              00000002
+CVR3                              00000003
+CVRCON                            0000009D
+CVREN                             00000007
+CVROE                             00000006
+CVRR                              00000005
+CW_X                              0000031B
+CW_Y                              0000031C
+D                                 00000005
+DATA_ADDRESS                      00000005
+DAT_X                             00000118
+DAT_Y                             00000119
+DB_WAIT                           0000039B
+DC                                00000001
+DC_COL                            000001D8
+DC_ROW                            000001D6
+DC_W1                             000001DB
+DC_W2                             000001E0
+DEBOUNCE                          0000039A
+DELAY_20MS                        000003A1
+DL_IN                             000003A5
+DL_OUT                            000003A3
+DO_FLAG                           00000273
+DO_RESTART                        0000035A
+DO_REVEAL                         00000250
+DRAW_ALL_TILES                    00000117
+gpasm-1.4.0 #1107 (Jan  1 2021) project_worki   5-6-2026  10:54:32          PAGE 33
+
+
+SYMBOL TABLE
+  LABEL                             VALUE 
+
+DRAW_CURSOR                       0000018F
+DRAW_TILE                         0000013F
+DRAW_TILE_STATE                   00000125
+DR_MINE                           0000026E
+DR_WAIT                           0000035A
+DTS_DRAW                          0000013D
+DTS_FLAG                          00000136
+DTS_REVEALED                      0000013B
+DT_COL                            0000017F
+DT_ROW                            0000017D
+DT_W1                             00000182
+DT_W2                             00000187
+D_A                               00000005
+D_NOT_A                           00000005
+EEADR                             0000010D
+EEADRH                            0000010F
+EECON1                            0000018C
+EECON2                            0000018D
+EEDATA                            0000010C
+EEDATH                            0000010E
+EEIE                              00000004
+EEIF                              00000004
+EEPGD                             00000007
+F                                 00000001
+FERR                              00000002
+FFPN_CALC                         000002D0
+FFPN_NX                           00000309
+FFPN_NY                           0000030E
+FFPN_X                            000002C9
+FFPN_Y                            000002C7
+FF_LOOP                           0000028C
+FF_PUSH_NEIGHBORS                 000002C1
+FF_REVEAL_CELL                    000002A4
+FLOOD_FILL                        00000282
+FRC_SKIP                          000002BE
+FSR                               00000004
+GAME_INIT                         0000002E
+GCEN                              00000007
+GC_0                              000000F4
+GC_1                              000000F9
+GC_2                              000000FE
+GC_3                              00000103
+GC_4                              00000108
+GC_5                              0000010D
+GC_6                              00000112
+GET_BIT                           00000096
+GET_COLOR                         000000DC
+GET_INNER_COLOR                   000001E8
+GIC_FLAG                          000001F9
+GIC_REV                           000001FE
+GIE                               00000007
+GI_CLR                            00000030
+GO                                00000002
+gpasm-1.4.0 #1107 (Jan  1 2021) project_worki   5-6-2026  10:54:32          PAGE 34
+
+
+SYMBOL TABLE
+  LABEL                             VALUE 
+
+GO_DONE                           00000002
+GO_NOT_DONE                       00000002
+I2C_DATA                          00000005
+I2C_READ                          00000002
+I2C_START                         00000003
+I2C_STOP                          00000004
+IBF                               00000007
+IBOV                              00000005
+INDF                              00000000
+INTCON                            0000000B
+INTE                              00000004
+INTEDG                            00000006
+INTF                              00000001
+IRP                               00000007
+LAYER_FLAG                        0000002D
+LAYER_MINE                        00000020
+LAYER_REV                         0000003A
+LCD_CMD                           0000038F
+LCD_DAT                           00000392
+LCD_FULL_BLACK                    00000361
+LFB_W1                            00000380
+LFB_W2                            00000385
+LFB_XIN                           0000037D
+LFB_XOUT                          0000037B
+LFB_Y                             00000379
+LFSR_STEP                         00000067
+MAIN_LOOP                         0000002C
+NOT_A                             00000005
+NOT_ADDRESS                       00000005
+NOT_BO                            00000000
+NOT_BOR                           00000000
+NOT_DONE                          00000002
+NOT_PD                            00000003
+NOT_POR                           00000001
+NOT_RBPU                          00000007
+NOT_RC8                           00000006
+NOT_T1SYNC                        00000002
+NOT_TO                            00000004
+NOT_TX8                           00000006
+NOT_W                             00000002
+NOT_WRITE                         00000002
+NUM_MINES                         00000014
+OBF                               00000006
+OERR                              00000001
+OPTION_REG                        00000081
+P                                 00000004
+PCFG0                             00000000
+PCFG1                             00000001
+PCFG2                             00000002
+PCFG3                             00000003
+PCL                               00000002
+PCLATH                            0000000A
+PCON                              0000008E
+gpasm-1.4.0 #1107 (Jan  1 2021) project_worki   5-6-2026  10:54:32          PAGE 35
+
+
+SYMBOL TABLE
+  LABEL                             VALUE 
+
+PEIE                              00000006
+PEN                               00000002
+PIE1                              0000008C
+PIE2                              0000008D
+PIR1                              0000000C
+PIR2                              0000000D
+PLANT_MINES                       00000044
+PM_DIV                            00000052
+PM_DIV_DONE                       00000059
+PM_GOT                            0000004F
+PM_MOD                            00000049
+PM_NEXT                           00000046
+PORTA                             00000005
+PORTB                             00000006
+PORTC                             00000007
+PORTD                             00000008
+PORTE                             00000009
+PR2                               00000092
+PS0                               00000000
+PS1                               00000001
+PS2                               00000002
+PSA                               00000003
+PSPIE                             00000007
+PSPIF                             00000007
+PSPMODE                           00000004
+R                                 00000002
+RA0                               00000000
+RA1                               00000001
+RA2                               00000002
+RA3                               00000003
+RA4                               00000004
+RA5                               00000005
+RAM_NEXT                          00000339
+RAM_X                             0000032D
+RAM_Y                             0000032E
+RB0                               00000000
+RB1                               00000001
+RB2                               00000002
+RB3                               00000003
+RB4                               00000004
+RB5                               00000005
+RB6                               00000006
+RB7                               00000007
+RBIE                              00000003
+RBIF                              00000000
+RB_GAME_OVER                      0000024D
+RB_NOT_DOWN                       00000225
+RB_NOT_FLAG                       0000024C
+RB_NOT_LEFT                       00000233
+RB_NOT_REVEAL                     00000247
+RB_NOT_RIGHT                      00000242
+RB_NOT_UP                         00000216
+RC0                               00000000
+gpasm-1.4.0 #1107 (Jan  1 2021) project_worki   5-6-2026  10:54:32          PAGE 36
+
+
+SYMBOL TABLE
+  LABEL                             VALUE 
+
+RC1                               00000001
+RC2                               00000002
+RC3                               00000003
+RC4                               00000004
+RC5                               00000005
+RC6                               00000006
+RC7                               00000007
+RC8_9                             00000006
+RC9                               00000006
+RCD8                              00000000
+RCEN                              00000003
+RCIE                              00000005
+RCIF                              00000005
+RCREG                             0000001A
+RCSTA                             00000018
+RD                                00000000
+RD0                               00000000
+RD1                               00000001
+RD2                               00000002
+RD3                               00000003
+RD4                               00000004
+RD5                               00000005
+RD6                               00000006
+RD7                               00000007
+RE0                               00000000
+RE1                               00000001
+RE2                               00000002
+READ_BUTTONS                      00000201
+READ_WRITE                        00000002
+REVEAL_ALL_MINES                  0000032C
+RP0                               00000005
+RP1                               00000006
+RSEN                              00000001
+RX9                               00000006
+RX9D                              00000000
+R_NOT_W                           00000002
+R_W                               00000002
+S                                 00000003
+SEN                               00000000
+SET_BIT                           0000009E
+SMP                               00000007
+SPBRG                             00000099
+SPEN                              00000007
+SPI_SEND                          00000394
+SPI_WAIT                          00000396
+SREN                              00000005
+SSPADD                            00000093
+SSPBUF                            00000013
+SSPCON                            00000014
+SSPCON2                           00000091
+SSPEN                             00000005
+SSPIE                             00000003
+SSPIF                             00000003
+gpasm-1.4.0 #1107 (Jan  1 2021) project_worki   5-6-2026  10:54:32          PAGE 37
+
+
+SYMBOL TABLE
+  LABEL                             VALUE 
+
+SSPM0                             00000000
+SSPM1                             00000001
+SSPM2                             00000002
+SSPM3                             00000003
+SSPOV                             00000006
+SSPSTAT                           00000094
+START                             00000005
+STATUS                            00000003
+SYNC                              00000004
+T0CS                              00000005
+T0IE                              00000005
+T0IF                              00000002
+T0SE                              00000004
+T1CKPS0                           00000004
+T1CKPS1                           00000005
+T1CON                             00000010
+T1INSYNC                          00000002
+T1OSCEN                           00000003
+T1SYNC                            00000002
+T2CKPS0                           00000000
+T2CKPS1                           00000001
+T2CON                             00000012
+TMR0                              00000001
+TMR0IE                            00000005
+TMR0IF                            00000002
+TMR1                              0000000E
+TMR1CS                            00000001
+TMR1H                             0000000F
+TMR1IE                            00000000
+TMR1IF                            00000000
+TMR1L                             0000000E
+TMR1ON                            00000000
+TMR2                              00000011
+TMR2IE                            00000001
+TMR2IF                            00000001
+TMR2ON                            00000002
+TOUTPS0                           00000003
+TOUTPS1                           00000004
+TOUTPS2                           00000005
+TOUTPS3                           00000006
+TRISA                             00000085
+TRISA0                            00000000
+TRISA1                            00000001
+TRISA2                            00000002
+TRISA3                            00000003
+TRISA4                            00000004
+TRISA5                            00000005
+TRISB                             00000086
+TRISB0                            00000000
+TRISB1                            00000001
+TRISB2                            00000002
+TRISB3                            00000003
+TRISB4                            00000004
+gpasm-1.4.0 #1107 (Jan  1 2021) project_worki   5-6-2026  10:54:32          PAGE 38
+
+
+SYMBOL TABLE
+  LABEL                             VALUE 
+
+TRISB5                            00000005
+TRISB6                            00000006
+TRISB7                            00000007
+TRISC                             00000087
+TRISC0                            00000000
+TRISC1                            00000001
+TRISC2                            00000002
+TRISC3                            00000003
+TRISC4                            00000004
+TRISC5                            00000005
+TRISC6                            00000006
+TRISC7                            00000007
+TRISD                             00000088
+TRISD0                            00000000
+TRISD1                            00000001
+TRISD2                            00000002
+TRISD3                            00000003
+TRISD4                            00000004
+TRISD5                            00000005
+TRISD6                            00000006
+TRISD7                            00000007
+TRISE                             00000089
+TRISE0                            00000000
+TRISE1                            00000001
+TRISE2                            00000002
+TRMT                              00000001
+TX8_9                             00000006
+TX9                               00000006
+TX9D                              00000000
+TXD8                              00000000
+TXEN                              00000005
+TXIE                              00000004
+TXIF                              00000004
+TXREG                             00000019
+TXSTA                             00000098
+UA                                00000001
+W                                 00000000
+WCOL                              00000007
+WIN_COUNT                         00000050
+WR                                00000001
+WREN                              00000002
+WRERR                             00000003
+XOR_BIT                           000000A2
+Z                                 00000002
+_BODEN_OFF                        00003FBF
+_BODEN_ON                         00003FFF
+_BOREN_OFF                        00003FBF
+_BOREN_ON                         00003FFF
+_CONFIG                           00002007
+_CPD_OFF                          00003FFF
+_CPD_ON                           00003EFF
+_CP_ALL                           00001FFF
+_CP_OFF                           00003FFF
+gpasm-1.4.0 #1107 (Jan  1 2021) project_worki   5-6-2026  10:54:32          PAGE 39
+
+
+SYMBOL TABLE
+  LABEL                             VALUE 
+
+_CP_ON                            00001FFF
+_DEBUG_OFF                        00003FFF
+_DEBUG_ON                         000037FF
+_DEVID1                           00002006
+_FOSC_EXTRC                       00003FFF
+_FOSC_HS                          00003FFE
+_FOSC_LP                          00003FFC
+_FOSC_XT                          00003FFD
+_HS_OSC                           00003FFE
+_IDLOC0                           00002000
+_IDLOC1                           00002001
+_IDLOC2                           00002002
+_IDLOC3                           00002003
+_LP_OSC                           00003FFC
+_LVP_OFF                          00003F7F
+_LVP_ON                           00003FFF
+_PWRTE_OFF                        00003FFF
+_PWRTE_ON                         00003FF7
+_RC_OSC                           00003FFF
+_WDTE_OFF                         00003FFB
+_WDTE_ON                          00003FFF
+_WDT_OFF                          00003FFB
+_WDT_ON                           00003FFF
+_WRT_1FOURTH                      00003BFF
+_WRT_256                          00003DFF
+_WRT_HALF                         000039FF
+_WRT_OFF                          00003FFF
+_XT_OSC                           00003FFD
+__16F877A                         00000001
+__CODE_END                        00001FFF
+__CODE_START                      00000000
+__COMMON_RAM_END                  0000007F
+__COMMON_RAM_START                00000070
+__EEPROM_END                      000021FF
+__EEPROM_START                    00002100
+__VECTOR_INT                      00000004
+__VECTOR_RESET                    00000000
+
+
+MEMORY USAGE MAP ('X' = Used,  '-' = Unused)
+
+0000 : X----XXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX
+0040 : XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX
+0080 : XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX
+00C0 : XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX
+0100 : XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX
+0140 : XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX
+0180 : XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX
+01C0 : XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX
+0200 : XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX
+0240 : XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX
+0280 : XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX
+02C0 : XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX
+gpasm-1.4.0 #1107 (Jan  1 2021) project_worki   5-6-2026  10:54:32          PAGE 40
+
+
+SYMBOL TABLE
+  LABEL                             VALUE 
+
+0300 : XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX
+0340 : XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX
+0380 : XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXX------ ----------------
+2000 : -------X-------- ---------------- ---------------- ----------------
+
+All other memory blocks unused.
+
+Program Memory Words Used:   934
+Program Memory Words Free:  7258
+
+
+Errors   :     0
+Warnings :     0 reported,     0 suppressed
+Messages :   115 reported,     0 suppressed
+
+

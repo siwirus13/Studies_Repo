@@ -1,0 +1,330 @@
+import os
+import math
+import numpy as np
+import gymnasium as gym
+from gymnasium import spaces
+from typing import Optional, Tuple, Dict, Any
+
+import jsbsim
+
+# ── Unit conversions ───────────────────────────────────────────────────────
+FT_TO_M    = 0.3048
+M_TO_FT    = 1.0 / FT_TO_M
+FPS_TO_MPS = FT_TO_M
+MPS_TO_FPS = M_TO_FT
+N_TO_LBF   = 0.224809
+LBF_TO_N   = 1.0 / N_TO_LBF
+
+class RocketAeroJSBSimEnv(gym.Env):
+    """Gymnasium wrapper around JSBSim for rocket attitude stabilisation."""
+
+    # UPDATED: Render FPS to match the 500Hz physics step
+    metadata = {"render_modes": ["human"], "render_fps": 500}
+
+    # ── JSBSim property names ───────────────────────────────────────────
+    _PROP_ROLL_RAD   = "attitude/phi-rad"
+    _PROP_PITCH_RAD  = "attitude/theta-rad"
+    _PROP_YAW_RAD    = "attitude/psi-rad"
+    _PROP_P          = "velocities/p-rad_sec"
+    _PROP_Q          = "velocities/q-rad_sec"
+    _PROP_R          = "velocities/r-rad_sec"
+    _PROP_ALT_M      = "position/h-sl-meters"
+    _PROP_VDOWN_FPS  = "velocities/v-down-fps"
+    _PROP_ELEV       = "fcs/elevator-cmd-norm"
+    _PROP_RUDDER     = "fcs/rudder-cmd-norm"
+    _PROP_AILERON    = "fcs/aileron-cmd-norm"
+    _PROP_THRUST_MAG = "external_reactions/thrust/magnitude"
+    _PROP_WIND_N     = "atmosphere/wind-north-fps"
+    _PROP_WIND_E     = "atmosphere/wind-east-fps"
+    _PROP_WIND_D     = "atmosphere/wind-down-fps"
+    _PROP_CG_X_IN    = "inertia/cg-x-in"  # ADDED: Track CG location
+
+    def __init__(
+        self,
+        aircraft_dir: Optional[str] = None,
+        dt: float = 0.002,                 # UPDATED: 500Hz control frequency
+        max_altitude_m: float = 25_000.0,  # UPDATED: Goal lowered to 25 km
+        thrust_n: float = 1000.0,          
+        burn_time_s: float = 90.0,         # UPDATED: Reduced burn time to cap apogee at ~32km
+        wind_speed_mps: float = 0.0,      
+        wind_turbulence: bool = False,
+        render_mode: Optional[str] = None,
+        debug: bool = False,
+    ):
+        super().__init__()
+
+        if aircraft_dir is None:
+            aircraft_dir = os.path.join(
+                os.path.dirname(os.path.abspath(__file__)), "aircraft"
+            )
+        self.aircraft_dir = aircraft_dir
+        self.jsbsim_root  = jsbsim.get_default_root_dir()
+
+        self.dt              = dt
+        self.max_altitude_m  = max_altitude_m
+        self.thrust_lbf      = thrust_n * N_TO_LBF
+        self.burn_time_s     = burn_time_s
+        self.wind_speed_mps  = wind_speed_mps
+        self.wind_turbulence = wind_turbulence
+        self.render_mode     = render_mode
+        self.debug           = debug
+
+        self._fdm: Optional[jsbsim.FGFDMExec] = None
+
+        self.nominal_wind_n = 0.0
+        self.nominal_wind_e = 0.0
+        self.rail_cleared   = False
+
+        # ── Observation space ──
+        obs_low  = np.array([-1.0, -1.0, -1.0,
+                              -50., -50., -50.,
+                              0., -500.], dtype=np.float32)
+        
+        # UPDATED: Lowered observation max altitude to 35km to match new 32km physical ceiling
+        obs_high = np.array([ 1.0,  1.0,  1.0,
+                               50.,  50.,  50.,
+                               35.,  1000.], dtype=np.float32)
+        self.observation_space = spaces.Box(obs_low, obs_high, dtype=np.float32)
+
+        # ── Action space: [-1, 1] ──
+        self.action_space = spaces.Box(
+            low=-1.0, high=1.0, shape=(3,), dtype=np.float32
+        )
+
+    def set_max_wind(self, wind_speed_mps: float):
+        self.wind_speed_mps = wind_speed_mps
+
+    def reset(
+        self,
+        *,
+        seed: Optional[int] = None,
+        options: Optional[Dict[str, Any]] = None,
+    ) -> Tuple[np.ndarray, Dict]:
+        super().reset(seed=seed)
+        self._init_fdm()
+        rng = self.np_random
+        self.rail_cleared = False
+
+        perturb = getattr(self, '_ic_perturb', 0.05)
+
+        self._fdm.set_property_value(self._PROP_ROLL_RAD,  float(rng.uniform(-perturb, perturb)))
+        self._fdm.set_property_value(self._PROP_PITCH_RAD, math.pi / 2 + float(rng.uniform(-perturb, perturb)))
+        self._fdm.set_property_value(self._PROP_YAW_RAD,   float(rng.uniform(-perturb, perturb)))
+        self._fdm.set_property_value(self._PROP_P, float(rng.uniform(-perturb, perturb)))
+        self._fdm.set_property_value(self._PROP_Q, float(rng.uniform(-perturb, perturb)))
+        self._fdm.set_property_value(self._PROP_R, float(rng.uniform(-perturb, perturb)))
+
+        self._set_wind(rng)
+        self._fdm.run_ic()
+
+        return self._get_obs(), {}
+
+    def step(
+        self, action: np.ndarray
+    ) -> Tuple[np.ndarray, float, bool, bool, Dict]:
+        
+        action = np.clip(action, -1.0, 1.0).astype(np.float64)
+
+        # Get current velocity before applying actions
+        v_dn_current = float(self._fdm.get_property_value(self._PROP_VDOWN_FPS))
+        v_up_ms = -v_dn_current * FPS_TO_MPS
+
+        # 1. Canard Lockout: Prevent movement until 50 m/s
+        if v_up_ms < 50.0:
+            action = np.zeros(3, dtype=np.float64)
+
+        self._fdm.set_property_value(self._PROP_ELEV,    float(action[0]))
+        self._fdm.set_property_value(self._PROP_RUDDER,  float(action[1]))
+        self._fdm.set_property_value(self._PROP_AILERON, float(action[2]))
+
+        t = self._fdm.get_sim_time()
+        thrust = self.thrust_lbf if t < self.burn_time_s else 0.0
+        self._fdm.set_property_value(self._PROP_THRUST_MAG, thrust)
+
+        # 2. Rail Physics: Hard-lock the rocket while on the rail
+        # We will assume it clears the rail at 30 m/s
+        if v_up_ms < 40.0:
+            self._fdm.set_property_value(self._PROP_WIND_N, 0.0)
+            self._fdm.set_property_value(self._PROP_WIND_E, 0.0)
+            self.rail_cleared = False
+            
+            # OVERRIDE JSBSIM INTEGRATION: Force attitude and rates to stay perfectly vertical
+            self._fdm.set_property_value(self._PROP_ROLL_RAD,  0.0)
+            self._fdm.set_property_value(self._PROP_PITCH_RAD, math.pi / 2.0)
+            self._fdm.set_property_value(self._PROP_YAW_RAD,   0.0)
+            self._fdm.set_property_value(self._PROP_P, 0.0)
+            self._fdm.set_property_value(self._PROP_Q, 0.0)
+            self._fdm.set_property_value(self._PROP_R, 0.0)
+            
+        else:
+            if not self.rail_cleared:
+                self._fdm.set_property_value(self._PROP_WIND_N, self.nominal_wind_n)
+                self._fdm.set_property_value(self._PROP_WIND_E, self.nominal_wind_e)
+                self.rail_cleared = True
+            
+            if self.wind_turbulence:
+                self._update_turbulence()
+
+        # Step the simulation forward
+        self._fdm.run()
+
+        obs        = self._get_obs()
+        reward     = self._compute_reward(action)
+        terminated = self._is_terminated(obs)
+        truncated  = obs[6] >= self.max_altitude_m / 1000.0
+
+        info = {
+            "sim_time":   t,
+            "altitude_m": obs[6] * 1000.0,
+            "tilt_x":     float(obs[0]),
+            "tilt_y":     float(obs[1]),
+            "tilt_deg":   math.degrees(math.asin(min(1.0, math.sqrt(obs[0]**2 + obs[1]**2)))),
+            "thrust_n":   thrust * LBF_TO_N,
+            "cg_x_in":    float(self._fdm.get_property_value(self._PROP_CG_X_IN)),
+        }
+
+        if self.render_mode == "human":
+            self.render()
+
+        return obs, reward, terminated, truncated, info
+    def render(self):
+        obs = self._get_obs()
+        t = self._fdm.get_sim_time()
+        tilt_deg = math.degrees(math.asin(min(1.0, math.sqrt(obs[0]**2 + obs[1]**2))))
+        cg_x = self._fdm.get_property_value(self._PROP_CG_X_IN)
+        print(
+            f"t={t:6.3f}s | h={obs[6]:6.3f} km | "
+            f"tilt={tilt_deg:6.2f}deg | "
+            f"v_up={obs[7]:6.1f} m/s | CG_X={cg_x:.2f} in"
+        )
+
+    def close(self):
+        self._fdm = None
+
+    def _init_fdm(self):
+        if self._fdm is not None:
+            del self._fdm
+
+        fdm = jsbsim.FGFDMExec(self.jsbsim_root, None)
+        fdm.set_debug_level(1 if self.debug else 0)
+        fdm.set_aircraft_path(self.aircraft_dir)
+        fdm.set_systems_path(os.path.join(self.jsbsim_root, "systems"))
+
+        ok = fdm.load_model("stabilizer_rocket")
+        if not ok:
+            raise RuntimeError("Failed to load 'stabilizer_rocket' JSBSim model")
+
+        fdm.set_dt(self.dt)
+
+        fdm.set_property_value("ic/h-sl-ft",    100.0 * M_TO_FT)
+        fdm.set_property_value("ic/vc-kts",     0.1)
+        fdm.set_property_value("ic/vd-fps",     0.0)
+        fdm.set_property_value("ic/phi-rad",    0.0)
+        fdm.set_property_value("ic/theta-rad",  math.pi / 2.0)  
+        fdm.set_property_value("ic/psi-true-rad", 0.0)
+        fdm.set_property_value("ic/p-rad_sec",  0.0)
+        fdm.set_property_value("ic/q-rad_sec",  0.0)
+        fdm.set_property_value("ic/r-rad_sec",  0.0)
+
+        fdm.set_property_value(self._PROP_WIND_N, 0.0)
+        fdm.set_property_value(self._PROP_WIND_E, 0.0)
+        fdm.set_property_value(self._PROP_WIND_D, 0.0)
+
+        if self.wind_turbulence:
+            fdm.set_property_value("atmosphere/turb-type", 2)
+            fdm.set_property_value("atmosphere/turb-rate", 3.0)
+            fdm.set_property_value("atmosphere/turb-gain", 0.5)
+
+        fdm.set_property_value(self._PROP_THRUST_MAG, 0.0)
+
+        fdm.run_ic()
+        self._fdm = fdm
+
+    def _set_wind(self, rng: np.random.Generator):
+        angle = rng.uniform(0, 2 * math.pi)
+        speed = rng.uniform(0.0, self.wind_speed_mps) * MPS_TO_FPS
+        self.nominal_wind_n = speed * math.cos(angle)
+        self.nominal_wind_e = speed * math.sin(angle)
+
+        self._fdm.set_property_value(self._PROP_WIND_N, 0.0)
+        self._fdm.set_property_value(self._PROP_WIND_E, 0.0)
+        self._fdm.set_property_value(self._PROP_WIND_D, 0.0)
+
+    def _update_turbulence(self):
+        sigma = 1.5 * MPS_TO_FPS  
+        wn = float(self._fdm.get_property_value(self._PROP_WIND_N))
+        we = float(self._fdm.get_property_value(self._PROP_WIND_E))
+        self._fdm.set_property_value(self._PROP_WIND_N, wn + float(self.np_random.normal(0, sigma * self.dt)))
+        self._fdm.set_property_value(self._PROP_WIND_E, we + float(self.np_random.normal(0, sigma * self.dt)))
+
+    def _get_obs(self) -> np.ndarray:
+        p     = float(self._fdm.get_property_value(self._PROP_P))
+        q     = float(self._fdm.get_property_value(self._PROP_Q))
+        r     = float(self._fdm.get_property_value(self._PROP_R))
+        h_m   = float(self._fdm.get_property_value(self._PROP_ALT_M))
+        v_dn  = float(self._fdm.get_property_value(self._PROP_VDOWN_FPS))
+        v_up  = -v_dn * FPS_TO_MPS
+
+        propagate = self._fdm.get_propagate()
+        Tl2b = np.asarray(propagate.get_Tl2b())
+        nose_local = Tl2b[0, :]  
+
+        tilt_x = float(nose_local[0])  
+        tilt_y = float(nose_local[1])  
+        roll_unused = 0.0  
+
+        return np.array(
+            [tilt_x, tilt_y, roll_unused, p, q, r, h_m / 1000.0, v_up],
+            dtype=np.float32,
+        )
+
+    def _compute_reward(self, action: np.ndarray) -> float:
+        tilt_x, tilt_y, _roll_unused, p, q, r, h_km, v_up = self._get_obs()
+        tilt_sq = tilt_x**2 + tilt_y**2
+        tilt_mag = math.sqrt(tilt_sq)
+        tilt_deg = math.degrees(math.asin(min(1.0, tilt_mag)))
+        
+        # 1. Massive Survival Incentive (The Will to Live)
+        r_survive = 0.2 
+        
+        # 2. Plateau Attitude Bonus (0-7 degrees is perfectly fine)
+        # We give a flat maximum reward of 0.5 inside the 7-degree cone.
+        # Outside the cone, the reward decays smoothly to avoid a harsh cliff.
+        if tilt_deg <= 7.0:
+            r_att = 0.5
+        else:
+            # Calculate how far outside the 7-degree cone we are in radians
+            excess_tilt_rad = math.radians(tilt_deg - 7.0)
+            r_att = 0.5 * math.exp(-20.0 * (excess_tilt_rad ** 2))
+
+        # 3. Bumped Velocity/Altitude Bonus
+        # Increased the multipliers to strongly prioritize flying upwards.
+        # This makes pushing vertically through the atmosphere highly lucrative.
+        r_alt_flat = 0.02 * max(v_up, 0.0) 
+        r_alt = 0.2 * math.tanh(max(v_up, 0.0) / 100.0)
+        
+        # 4. Mild Control/Rate Penalties
+        r_rate = -0.01 * (p**2 + q**2 + r**2)
+        r_ctrl = -0.001 * float(np.sum(action**2))
+        
+        return float(r_survive + r_att + r_alt + r_alt_flat + r_rate + r_ctrl)
+
+    def _is_terminated(self, obs: np.ndarray) -> bool:
+        tilt_x, tilt_y, _roll_unused, p, q, r, h_km, v_up = obs
+        tilt_mag = math.sqrt(tilt_x**2 + tilt_y**2)
+
+        if tilt_mag > math.sin(math.radians(35)):
+            return True
+        if max(abs(p), abs(q), abs(r)) > math.radians(720):
+            return True
+        if h_km * 1000.0 < 10.0:
+            return True
+        return False
+
+def register_env():
+    gym.register(
+        id="RocketJSBSim-v0",
+        entry_point=f"{__name__}:RocketAeroJSBSimEnv",
+        # UPDATED: Scale max steps to fit 500Hz (dt=0.002) for a 120s flight
+        max_episode_steps=int(120.0 / 0.002),  
+    )

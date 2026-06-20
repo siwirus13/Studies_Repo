@@ -1,0 +1,2233 @@
+gpasm-1.4.0 #1107 (Jan  1 2021)  saper5x5.asm   5-6-2026  10:54:32          PAGE  1
+
+
+LOC    OBJECT CODE    LINE  SOURCE TEXT
+  VALUE
+
+                      00001 ; =============================================================================
+                      00002 ; SAPER (Minesweeper) dla PIC16F877A + ILI9341 (SPI)
+                      00003 ; WERSJA: 5x5, 7 min, poprawiony flood-fill (BFS na stosie software),
+                      00004 ;         poprawiony kolor dla 2 sąsiadów (niebieski 0x001F)
+                      00005 ; =============================================================================
+                      00006 ; MAPA REJESTRÓW:
+                      00007 ;   0x20-0x23 : Warstwa flag    (5x5 = 25 bitów -> 4 bajty)
+                      00008 ;   0x24-0x27 : Warstwa min     (5x5 = 25 bitów -> 4 bajty)
+                      00009 ;   0x28-0x2B : Warstwa odkrytych (5x5 = 25 bitów -> 4 bajty)
+                      00010 ;
+                      00011 ;   0x50 : Aktualny X kursora (bieżące pole przy rysowaniu)
+                      00012 ;   0x51 : Aktualny Y kursora
+                      00013 ;   0x54 : Docelowy X (po wciśnięciu przycisku)
+                      00014 ;   0x55 : Docelowy Y
+                      00015 ;   0x56 : Tymczasowy indeks liniowy
+                      00016 ;   0x57 : Tymczasowy (przesunięcie bajtowe / licznik pętli)
+                      00017 ;   0x58 : Wynikowa maska bitu
+                      00018 ;   0x59 : Adres bazowy warstwy (0x20/0x24/0x28)
+                      00019 ;   0x60-0x63 : x0, x1, y0, y1 okna LCD
+                      00020 ;   0x64-0x65 : Kolor (RGB565, High/Low)
+                      00021 ;   0x66-0x67 : Liczniki pętli rysowania kafelka
+                      00022 ;   0x70-0x71 : Liczniki opóźnienia
+                      00023 ;   0x72-0x74 : Liczniki wypełniania ekranu
+                      00024 ;   0x75 : Tymczasowy przy obliczaniu współrzędnych LCD
+                      00025 ;   0x76 : Tymczasowy (kopia W)
+                      00026 ;   0x78-0x79 : Kopia X/Y przy CHECK_MINE_AT
+                      00027 ;   0x7A-0x7B : Współrzędne sąsiada przy licz sąsiadów
+                      00028 ;   0x7C : Wynik COUNT_MINES (liczba sąsiadów-min)
+                      00029 ;   0x7D : Delta Y sąsiada (-1,0,+1 jako 0xFF,0x00,0x01)
+                      00030 ;   0x7E : Delta X sąsiada
+                      00031 ;   0x7F : Tymczasowy wynik CHECK_MINE_AT
+                      00032 ;
+                      00033 ; STOS BFS FLOOD-FILL (software stack, 16 pozycji)
+                      00034 ;   0x80-0x8F : Bufor X stosu (16 wpisów)
+                      00035 ;   0x90-0x9F : Bufor Y stosu (16 wpisów)
+                      00036 ;   0xA0 : Wskaźnik wierzchołka stosu (0-16)
+                      00037 ;
+                      00038 ; KONTROLA GRY
+                      00039 ;   0xA1 : Stan gry (0=trwa, 1=wygrana, 2=przegrana)
+                      00040 ;   0xA2 : Licznik odkrytych pól
+                      00041 ;   0xA3 : Łączna liczba min
+                      00042 ;
+                      00043 ; ROZMIAR KAFELKA / UKŁAD EKRANU (5x5):
+                      00044 ;   Stride = 24px, rozmiar kafelka = 22x22px
+                      00045 ;   x0 = X*24 + 60,  x1 = x0+21
+                      00046 ;   y0 = Y*24 + 80,  y1 = y0+21
+                      00047 ;   Legenda: y=260..273
+                      00048 ; =============================================================================
+                      00049 
+                      00050 #include <p16f877a.inc>
+                      00001         LIST
+                      00002 
+                      00003 ;==========================================================================
+gpasm-1.4.0 #1107 (Jan  1 2021)  saper5x5.asm   5-6-2026  10:54:32          PAGE  2
+
+
+LOC    OBJECT CODE    LINE  SOURCE TEXT
+  VALUE
+
+                      00004 ; Build date : Aug 07 2014
+                      00005 ;  MPASM PIC16F877A processor include
+                      00006 ; 
+                      00007 ;  (c) Copyright 1999-2014 Microchip Technology, All rights reserved
+                      00008 ;==========================================================================
+                      00009 
+                      00567         LIST
+2007   3FBB           00051     __CONFIG _FOSC_EXTRC & _WDTE_OFF & _PWRTE_OFF & _BOREN_OFF & _LVP_ON & _CPD_OFF & _WRT_OFF & _CP_OFF
+                      00052 
+0000                  00053     ORG 0x0000
+0000   2805           00054     goto START
+                      00055 
+0005                  00056     ORG 0x0005
+                      00057 
+0005                  00058 START:
+                      00059     ; --- Konfiguracja portów (Bank 1) ---
+0005   1303           00060     bcf  STATUS, RP1
+0006   1683           00061     bsf  STATUS, RP0
+0007   3006           00062     movlw 0x06
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x1f}.
+0008   009F           00063     movwf ADCON1            ; Wyłącz ADC na PORTA/E
+0009   30FF           00064     movlw 0xFF
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x6}.
+000A   0086           00065     movwf TRISB             ; PORTB jako wejścia (przyciski RB0-RB7)
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x8}.
+000B   0188           00066     clrf  TRISD
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x7}.
+000C   1007           00067     bcf   TRISC, 0          ; RC0 = RESET LCD (wyjście)
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x7}.
+000D   1087           00068     bcf   TRISC, 1          ; RC1 = D/C LCD  (wyjście)
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x7}.
+000E   1107           00069     bcf   TRISC, 2          ; RC2 = CS LCD   (wyjście)
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x7}.
+000F   1187           00070     bcf   TRISC, 3          ; RC3 = SCK SPI  (wyjście)
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x7}.
+0010   1287           00071     bcf   TRISC, 5          ; RC5 = SDO SPI  (wyjście)
+                      00072     ; Konfiguracja SPI Master (Bank 1)
+0011   3040           00073     movlw b'01000000'       ; SMP=0, CKE=1
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x14}.
+0012   0094           00074     movwf SSPSTAT
+0013   1283           00075     bcf   STATUS, RP0
+                      00076 
+                      00077     ; Konfiguracja SPI (Bank 0)
+0014   3020           00078     movlw b'00100000'       ; SSPEN, Master, Fosc/4
+0015   0094           00079     movwf SSPCON
+                      00080 
+                      00081     ; --- Inicjalizacja LCD ILI9341 ---
+0016   1507           00082     bsf   PORTC, 2          ; CS=1 (nieaktywny)
+0017   1407           00083     bsf   PORTC, 0          ; RESET=1
+0018   23E4           00084     call  DELAY_20MS
+0019   1007           00085     bcf   PORTC, 0          ; RESET=0
+001A   23E4           00086     call  DELAY_20MS
+001B   1407           00087     bsf   PORTC, 0          ; RESET=1
+gpasm-1.4.0 #1107 (Jan  1 2021)  saper5x5.asm   5-6-2026  10:54:32          PAGE  3
+
+
+LOC    OBJECT CODE    LINE  SOURCE TEXT
+  VALUE
+
+001C   23E4           00088     call  DELAY_20MS
+001D   3001           00089     movlw 0x01              ; Software Reset
+001E   2343           00090     call  SEND_CMD
+001F   23E4           00091     call  DELAY_20MS
+0020   3011           00092     movlw 0x11              ; Sleep Out
+0021   2343           00093     call  SEND_CMD
+0022   23E4           00094     call  DELAY_20MS
+0023   303A           00095     movlw 0x3A              ; Pixel Format
+0024   2343           00096     call  SEND_CMD
+0025   3055           00097     movlw 0x55              ; 16-bit (RGB565)
+0026   2346           00098     call  SEND_DAT
+0027   3029           00099     movlw 0x29              ; Display ON
+0028   2343           00100     call  SEND_CMD
+                      00101 
+                      00102     ; --- Wypełnij ekran czarnym ---
+0029   302A           00103     movlw 0x2A              ; Column Address Set
+002A   2343           00104     call  SEND_CMD
+002B   3000           00105     movlw 0x00
+002C   2346           00106     call  SEND_DAT
+002D   3000           00107     movlw 0x00
+002E   2346           00108     call  SEND_DAT
+002F   3000           00109     movlw 0x00
+0030   2346           00110     call  SEND_DAT
+0031   30EF           00111     movlw 0xEF              ; x=239
+0032   2346           00112     call  SEND_DAT
+0033   302B           00113     movlw 0x2B              ; Row Address Set
+0034   2343           00114     call  SEND_CMD
+0035   3000           00115     movlw 0x00
+0036   2346           00116     call  SEND_DAT
+0037   3000           00117     movlw 0x00
+0038   2346           00118     call  SEND_DAT
+0039   3001           00119     movlw 0x01
+003A   2346           00120     call  SEND_DAT
+003B   303F           00121     movlw 0x3F              ; y=319
+003C   2346           00122     call  SEND_DAT
+003D   302C           00123     movlw 0x2C              ; Memory Write
+003E   2343           00124     call  SEND_CMD
+003F   1487           00125     bsf   PORTC, 1          ; D/C=1 (dane)
+0040   1107           00126     bcf   PORTC, 2          ; CS=0 (aktywny)
+0041   30F0           00127     movlw d'240'
+0042   00F2           00128     movwf 0x72
+0043                  00129 FILL_Y:
+0043   3004           00130     movlw d'4'
+0044   00F3           00131     movwf 0x73
+0045                  00132 FILL_X_OUTER:
+0045   3050           00133     movlw d'80'
+0046   00F4           00134     movwf 0x74
+0047                  00135 FILL_X_INNER:
+0047   118C           00136     bcf  PIR1, 3
+0048   3000           00137     movlw 0x00
+0049   0093           00138     movwf SSPBUF
+004A                  00139 WAIT_H:
+004A   1D8C           00140     btfss PIR1, 3
+gpasm-1.4.0 #1107 (Jan  1 2021)  saper5x5.asm   5-6-2026  10:54:32          PAGE  4
+
+
+LOC    OBJECT CODE    LINE  SOURCE TEXT
+  VALUE
+
+004B   284A           00141     goto  WAIT_H
+004C   118C           00142     bcf   PIR1, 3
+004D   3000           00143     movlw 0x00
+004E   0093           00144     movwf SSPBUF
+004F                  00145 WAIT_L:
+004F   1D8C           00146     btfss PIR1, 3
+0050   284F           00147     goto  WAIT_L
+0051   0BF4           00148     decfsz 0x74, F
+0052   2847           00149     goto  FILL_X_INNER
+0053   0BF3           00150     decfsz 0x73, F
+0054   2845           00151     goto  FILL_X_OUTER
+0055   0BF2           00152     decfsz 0x72, F
+0056   2843           00153     goto  FILL_Y
+0057   1507           00154     bsf   PORTC, 2          ; CS=1
+                      00155 
+                      00156     ; --- Wyczyść RAM gry (0x20-0x2B, 4 bajty × 3 warstwy = 12 bajtów) ---
+0058   3020           00157     movlw 0x20
+0059   0084           00158     movwf FSR
+005A                  00159 CLEAR_RAM_LOOP:
+005A   0180           00160     clrf  INDF
+005B   0A84           00161     incf  FSR, F
+005C   302C           00162     movlw 0x2C
+005D   0204           00163     subwf FSR, W
+005E   1D03           00164     btfss STATUS, Z
+005F   285A           00165     goto  CLEAR_RAM_LOOP
+                      00166 
+                      00167     ; --- Inicjalizacja zmiennych gry ---
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x20}.
+0060   01A0           00168     clrf  0xA0              ; Stack pointer BFS = 0
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x21}.
+0061   01A1           00169     clrf  0xA1              ; Stan gry = trwa
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x22}.
+0062   01A2           00170     clrf  0xA2              ; Odkryte = 0
+0063   3007           00171     movlw d'7'              ; 7 min
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x23}.
+0064   00A3           00172     movwf 0xA3
+                      00173 
+0065   2078           00174     call  PLANT_DUMMY_MINES
+0066   224E           00175     call  DRAW_GRID
+0067   21CA           00176     call  DRAW_LEGEND
+                      00177 
+0068                  00178 GAME_INIT:
+0068   3002           00179     movlw d'2'
+0069   00D0           00180     movwf 0x50
+006A   00D1           00181     movwf 0x51
+006B   00D4           00182     movwf 0x54
+006C   00D5           00183     movwf 0x55
+006D   30FF           00184     movlw 0xFF
+006E   00E4           00185     movwf 0x64
+006F   00E5           00186     movwf 0x65
+0070   228B           00187     call  DRAW_TILE         ; Rysuj kursor startowy
+                      00188 
+0071                  00189 MAIN_LOOP:
+gpasm-1.4.0 #1107 (Jan  1 2021)  saper5x5.asm   5-6-2026  10:54:32          PAGE  5
+
+
+LOC    OBJECT CODE    LINE  SOURCE TEXT
+  VALUE
+
+                      00190     ; Jeśli gra skończona, czekaj w pętli
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x21}.
+0071   08A1           00191     movf  0xA1, F
+0072   1D03           00192     btfss STATUS, Z
+0073   2877           00193     goto  GAME_OVER_LOOP
+0074   234E           00194     call  CHECK_BUTTONS
+0075   2262           00195     call  UPDATE_CURSOR
+0076   2871           00196     goto  MAIN_LOOP
+                      00197 
+0077                  00198 GAME_OVER_LOOP:
+0077   2877           00199     goto  GAME_OVER_LOOP    ; Nieskończona pętla po końcu gry
+                      00200 
+                      00201 ; =============================================================================
+                      00202 ; ROZMIESZCZENIE MIN (7 min na siatce 5x5, hardcoded do testów)
+                      00203 ; Miny na: (0,0),(4,4),(1,3),(3,1),(0,4),(2,2),(4,1)
+                      00204 ; =============================================================================
+0078                  00205 PLANT_DUMMY_MINES:
+0078   3024           00206     movlw 0x24              ; Warstwa min
+0079   00D9           00207     movwf 0x59
+                      00208     ; X=0, Y=0
+007A   3000           00209     movlw d'0'
+007B   00D0           00210     movwf 0x50
+007C   00D1           00211     movwf 0x51
+007D   20A9           00212     call  GET_BITMASK_AND_PTR
+007E   0858           00213     movf  0x58, W
+007F   0480           00214     iorwf INDF, F
+                      00215     ; X=4, Y=4
+0080   3004           00216     movlw d'4'
+0081   00D0           00217     movwf 0x50
+0082   00D1           00218     movwf 0x51
+0083   20A9           00219     call  GET_BITMASK_AND_PTR
+0084   0858           00220     movf  0x58, W
+0085   0480           00221     iorwf INDF, F
+                      00222     ; X=1, Y=3
+0086   3001           00223     movlw d'1'
+0087   00D0           00224     movwf 0x50
+0088   3003           00225     movlw d'3'
+0089   00D1           00226     movwf 0x51
+008A   20A9           00227     call  GET_BITMASK_AND_PTR
+008B   0858           00228     movf  0x58, W
+008C   0480           00229     iorwf INDF, F
+                      00230     ; X=3, Y=1
+008D   3003           00231     movlw d'3'
+008E   00D0           00232     movwf 0x50
+008F   3001           00233     movlw d'1'
+0090   00D1           00234     movwf 0x51
+0091   20A9           00235     call  GET_BITMASK_AND_PTR
+0092   0858           00236     movf  0x58, W
+0093   0480           00237     iorwf INDF, F
+                      00238     ; X=0, Y=4
+0094   3000           00239     movlw d'0'
+0095   00D0           00240     movwf 0x50
+0096   3004           00241     movlw d'4'
+gpasm-1.4.0 #1107 (Jan  1 2021)  saper5x5.asm   5-6-2026  10:54:32          PAGE  6
+
+
+LOC    OBJECT CODE    LINE  SOURCE TEXT
+  VALUE
+
+0097   00D1           00242     movwf 0x51
+0098   20A9           00243     call  GET_BITMASK_AND_PTR
+0099   0858           00244     movf  0x58, W
+009A   0480           00245     iorwf INDF, F
+                      00246     ; X=2, Y=2
+009B   3002           00247     movlw d'2'
+009C   00D0           00248     movwf 0x50
+009D   00D1           00249     movwf 0x51
+009E   20A9           00250     call  GET_BITMASK_AND_PTR
+009F   0858           00251     movf  0x58, W
+00A0   0480           00252     iorwf INDF, F
+                      00253     ; X=4, Y=1
+00A1   3004           00254     movlw d'4'
+00A2   00D0           00255     movwf 0x50
+00A3   3001           00256     movlw d'1'
+00A4   00D1           00257     movwf 0x51
+00A5   20A9           00258     call  GET_BITMASK_AND_PTR
+00A6   0858           00259     movf  0x58, W
+00A7   0480           00260     iorwf INDF, F
+00A8   0008           00261     return
+                      00262 
+                      00263 ; =============================================================================
+                      00264 ; GET_BITMASK_AND_PTR
+                      00265 ; Wejście: 0x50=X, 0x51=Y, 0x59=adres bazowy warstwy
+                      00266 ; Wyjście: FSR wskazuje na właściwy bajt, 0x58=maska bitu
+                      00267 ; Formuła: index = Y*5 + X
+                      00268 ; =============================================================================
+00A9                  00269 GET_BITMASK_AND_PTR:
+                      00270     ; Index = Y*5 + X
+00A9   0851           00271     movf  0x51, W
+00AA   00D7           00272     movwf 0x57          ; Licznik Y (iteracje mnożenia)
+00AB   0850           00273     movf  0x50, W
+00AC   00D6           00274     movwf 0x56          ; Index = X na start
+00AD   08D7           00275     movf  0x57, F
+00AE   1903           00276     btfsc STATUS, Z
+00AF   28B4           00277     goto  GTB_CALC_OFFSET
+00B0                  00278 GTB_LOOP_Y:
+00B0   3005           00279     movlw d'5'
+00B1   07D6           00280     addwf 0x56, F       ; Index += 5 (bo siatka 5 szeroka)
+00B2   0BD7           00281     decfsz 0x57, F
+00B3   28B0           00282     goto  GTB_LOOP_Y
+                      00283 
+00B4                  00284 GTB_CALC_OFFSET:
+                      00285     ; Bajt = Index / 8 (3x rrf)
+00B4   0856           00286     movf  0x56, W
+00B5   00D7           00287     movwf 0x57
+00B6   1003           00288     bcf   STATUS, C
+00B7   0CD7           00289     rrf   0x57, F
+00B8   1003           00290     bcf   STATUS, C
+00B9   0CD7           00291     rrf   0x57, F
+00BA   1003           00292     bcf   STATUS, C
+00BB   0CD7           00293     rrf   0x57, F
+00BC   3007           00294     movlw 0x07          ; Max 4 bajty dla 5x5 (25 bitów)
+gpasm-1.4.0 #1107 (Jan  1 2021)  saper5x5.asm   5-6-2026  10:54:32          PAGE  7
+
+
+LOC    OBJECT CODE    LINE  SOURCE TEXT
+  VALUE
+
+00BD   05D7           00295     andwf 0x57, F
+00BE   0859           00296     movf  0x59, W
+00BF   0757           00297     addwf 0x57, W
+00C0   0084           00298     movwf FSR           ; FSR = adres bazowy + bajt
+                      00299 
+                      00300     ; Bit = Index % 8
+00C1   3007           00301     movlw 0x07
+00C2   0556           00302     andwf 0x56, W
+00C3   00D7           00303     movwf 0x57          ; Numer bitu (0-7)
+                      00304 
+00C4   3001           00305     movlw b'00000001'
+00C5   00D8           00306     movwf 0x58
+00C6   08D7           00307     movf  0x57, F
+00C7   1903           00308     btfsc STATUS, Z
+00C8   28CD           00309     goto  GTB_END
+00C9                  00310 GTB_MASK_LOOP:
+00C9   1003           00311     bcf   STATUS, C
+00CA   0DD8           00312     rlf   0x58, F
+00CB   0BD7           00313     decfsz 0x57, F
+00CC   28C9           00314     goto  GTB_MASK_LOOP
+00CD                  00315 GTB_END:
+00CD   0008           00316     return
+                      00317 
+                      00318 ; =============================================================================
+                      00319 ; COUNT_MINES
+                      00320 ; Wejście: 0x50=X, 0x51=Y
+                      00321 ; Wyjście: W i 0x7C = liczba min w sąsiadujących 8 polach
+                      00322 ; Granica planszy: 5 (siatka 5x5)
+                      00323 ; =============================================================================
+00CE                  00324 COUNT_MINES:
+00CE   01FC           00325     clrf  0x7C
+                      00326 
+00CF   30FF           00327     movlw 0xFF
+00D0   00FD           00328     movwf 0x7D              ; DY = -1
+00D1                  00329 CM_LOOP_Y:
+00D1   30FF           00330     movlw 0xFF
+00D2   00FE           00331     movwf 0x7E              ; DX = -1
+00D3                  00332 CM_LOOP_X:
+00D3   08FE           00333     movf  0x7E, F
+00D4   1D03           00334     btfss STATUS, Z
+00D5   28DA           00335     goto  CM_CALC_COORD
+00D6   08FD           00336     movf  0x7D, F
+00D7   1D03           00337     btfss STATUS, Z
+00D8   28DA           00338     goto  CM_CALC_COORD
+00D9   28EA           00339     goto  CM_NEXT_X         ; (0,0) - samo pole, pomiń
+                      00340 
+00DA                  00341 CM_CALC_COORD:
+                      00342     ; sX = X + DX (DX jest 0xFF dla -1, 0x00, 0x01)
+00DA   0850           00343     movf  0x50, W
+00DB   077E           00344     addwf 0x7E, W
+00DC   00FA           00345     movwf 0x7A              ; sX
+                      00346 
+                      00347     ; Odrzuć jeśli sX >= 5 (obsługuje też wraparound przy X=0,DX=-1)
+gpasm-1.4.0 #1107 (Jan  1 2021)  saper5x5.asm   5-6-2026  10:54:32          PAGE  8
+
+
+LOC    OBJECT CODE    LINE  SOURCE TEXT
+  VALUE
+
+00DD   3005           00348     movlw d'5'
+00DE   027A           00349     subwf 0x7A, W           ; W = sX - 5; C=1 jeśli sX>=5
+00DF   1803           00350     btfsc STATUS, C
+00E0   28EA           00351     goto  CM_NEXT_X
+                      00352 
+                      00353     ; sY = Y + DY
+00E1   0851           00354     movf  0x51, W
+00E2   077D           00355     addwf 0x7D, W
+00E3   00FB           00356     movwf 0x7B              ; sY
+                      00357 
+00E4   3005           00358     movlw d'5'
+00E5   027B           00359     subwf 0x7B, W           ; W = sY - 5; C=1 jeśli sY>=5
+00E6   1803           00360     btfsc STATUS, C
+00E7   28EA           00361     goto  CM_NEXT_X
+                      00362 
+00E8   20F6           00363     call  CHECK_MINE_AT
+00E9   07FC           00364     addwf 0x7C, F
+                      00365 
+00EA                  00366 CM_NEXT_X:
+00EA   0AFE           00367     incf  0x7E, F
+00EB   3002           00368     movlw 0x02
+00EC   027E           00369     subwf 0x7E, W
+00ED   1D03           00370     btfss STATUS, Z
+00EE   28D3           00371     goto  CM_LOOP_X
+                      00372 
+00EF                  00373 CM_NEXT_Y:
+00EF   0AFD           00374     incf  0x7D, F
+00F0   3002           00375     movlw 0x02
+00F1   027D           00376     subwf 0x7D, W
+00F2   1D03           00377     btfss STATUS, Z
+00F3   28D1           00378     goto  CM_LOOP_Y
+                      00379 
+00F4   087C           00380     movf  0x7C, W
+00F5   0008           00381     return
+                      00382 
+                      00383 ; =============================================================================
+                      00384 ; CHECK_MINE_AT
+                      00385 ; Wejście: 0x7A=X sąsiada, 0x7B=Y sąsiada
+                      00386 ; Wyjście: W = 1 jeśli mina, 0 jeśli nie
+                      00387 ; Zachowuje: 0x50, 0x51
+                      00388 ; =============================================================================
+00F6                  00389 CHECK_MINE_AT:
+00F6   0850           00390     movf  0x50, W
+00F7   00F8           00391     movwf 0x78
+00F8   0851           00392     movf  0x51, W
+00F9   00F9           00393     movwf 0x79
+00FA   087A           00394     movf  0x7A, W
+00FB   00D0           00395     movwf 0x50
+00FC   087B           00396     movf  0x7B, W
+00FD   00D1           00397     movwf 0x51
+00FE   3024           00398     movlw 0x24
+00FF   00D9           00399     movwf 0x59
+0100   20A9           00400     call  GET_BITMASK_AND_PTR
+gpasm-1.4.0 #1107 (Jan  1 2021)  saper5x5.asm   5-6-2026  10:54:32          PAGE  9
+
+
+LOC    OBJECT CODE    LINE  SOURCE TEXT
+  VALUE
+
+0101   0858           00401     movf  0x58, W
+0102   0500           00402     andwf INDF, W
+0103   3000           00403     movlw 0x00
+0104   1D03           00404     btfss STATUS, Z
+0105   3001           00405     movlw 0x01
+0106   00FF           00406     movwf 0x7F
+0107   0878           00407     movf  0x78, W
+0108   00D0           00408     movwf 0x50
+0109   0879           00409     movf  0x79, W
+010A   00D1           00410     movwf 0x51
+010B   087F           00411     movf  0x7F, W
+010C   0008           00412     return
+                      00413 
+                      00414 ; =============================================================================
+                      00415 ; IS_REVEALED
+                      00416 ; Wejście: 0x50=X, 0x51=Y
+                      00417 ; Wyjście: STATUS,Z=1 jeśli NIE odkryte, Z=0 jeśli odkryte
+                      00418 ; =============================================================================
+010D                  00419 IS_REVEALED:
+010D   3028           00420     movlw 0x28
+010E   00D9           00421     movwf 0x59
+010F   20A9           00422     call  GET_BITMASK_AND_PTR
+0110   0858           00423     movf  0x58, W
+0111   0500           00424     andwf INDF, W
+0112   0008           00425     return
+                      00426 
+                      00427 ; =============================================================================
+                      00428 ; IS_MINE
+                      00429 ; Wejście: 0x50=X, 0x51=Y
+                      00430 ; Wyjście: STATUS,Z=1 jeśli NIE mina, Z=0 jeśli mina
+                      00431 ; =============================================================================
+0113                  00432 IS_MINE:
+0113   3024           00433     movlw 0x24
+0114   00D9           00434     movwf 0x59
+0115   20A9           00435     call  GET_BITMASK_AND_PTR
+0116   0858           00436     movf  0x58, W
+0117   0500           00437     andwf INDF, W
+0118   0008           00438     return
+                      00439 
+                      00440 ; =============================================================================
+                      00441 ; MARK_REVEALED - ustawia bit odkrycia dla pola (0x50, 0x51)
+                      00442 ; =============================================================================
+0119                  00443 MARK_REVEALED:
+0119   3028           00444     movlw 0x28
+011A   00D9           00445     movwf 0x59
+011B   20A9           00446     call  GET_BITMASK_AND_PTR
+011C   0858           00447     movf  0x58, W
+011D   0480           00448     iorwf INDF, F
+011E   0008           00449     return
+                      00450 
+                      00451 ; =============================================================================
+                      00452 ; REVEAL_TILE
+                      00453 ; Wejście: 0x50=X, 0x51=Y
+gpasm-1.4.0 #1107 (Jan  1 2021)  saper5x5.asm   5-6-2026  10:54:32          PAGE 10
+
+
+LOC    OBJECT CODE    LINE  SOURCE TEXT
+  VALUE
+
+                      00454 ; Odkrywa pole; jeśli 0 sąsiadów-min, inicjuje BFS flood-fill (stos iteracyjny)
+                      00455 ; =============================================================================
+011F                  00456 REVEAL_TILE:
+                      00457     ; 1. Jeśli już odkryte, wyjdź
+011F   210D           00458     call  IS_REVEALED
+0120   1D03           00459     btfss STATUS, Z
+0121   0008           00460     return
+                      00461 
+                      00462     ; 2. Jeśli ma flagę, zignoruj
+0122   3020           00463     movlw 0x20
+0123   00D9           00464     movwf 0x59
+0124   20A9           00465     call  GET_BITMASK_AND_PTR
+0125   0858           00466     movf  0x58, W
+0126   0500           00467     andwf INDF, W
+0127   1D03           00468     btfss STATUS, Z
+0128   0008           00469     return
+                      00470 
+                      00471     ; 3. Oznacz jako odkryte
+0129   2119           00472     call  MARK_REVEALED
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x22}.
+012A   0AA2           00473     incf  0xA2, F
+                      00474 
+                      00475     ; 4. Policz sąsiednie miny i narysuj
+012B   20CE           00476     call  COUNT_MINES       ; W = 0x7C = liczba
+012C   22DF           00477     call  GET_REVEALED_COLOR
+012D   228B           00478     call  DRAW_TILE
+                      00479 
+                      00480     ; 5. Jeśli 0 min w sąsiedztwie, użyj BFS flood-fill
+012E   08FC           00481     movf  0x7C, F
+012F   1D03           00482     btfss STATUS, Z
+0130   0008           00483     return                  ; Ma sąsiadów-min, stop
+                      00484 
+                      00485     ; --- Inicjalizacja stosu BFS ---
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x20}.
+0131   01A0           00486     clrf  0xA0              ; Reset wskaźnika stosu
+                      00487 
+                      00488     ; Push bieżącego pola
+0132   3080           00489     movlw 0x80
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x20}.
+0133   0720           00490     addwf 0xA0, W
+0134   0084           00491     movwf FSR
+0135   0850           00492     movf  0x50, W
+0136   0080           00493     movwf INDF              ; Stos X [0] = X
+                      00494 
+0137   3090           00495     movlw 0x90
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x20}.
+0138   0720           00496     addwf 0xA0, W
+0139   0084           00497     movwf FSR
+013A   0851           00498     movf  0x51, W
+013B   0080           00499     movwf INDF              ; Stos Y [0] = Y
+                      00500 
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x20}.
+013C   0AA0           00501     incf  0xA0, F           ; SP = 1
+gpasm-1.4.0 #1107 (Jan  1 2021)  saper5x5.asm   5-6-2026  10:54:32          PAGE 11
+
+
+LOC    OBJECT CODE    LINE  SOURCE TEXT
+  VALUE
+
+                      00502 
+                      00503     ; --- BFS główna pętla ---
+013D                  00504 BFS_LOOP:
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x20}.
+013D   08A0           00505     movf  0xA0, F
+013E   1903           00506     btfsc STATUS, Z
+013F   0008           00507     return                  ; Stos pusty, koniec
+                      00508 
+                      00509     ; Pop ze stosu (LIFO: SP-1)
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x20}.
+0140   03A0           00510     decf  0xA0, F
+                      00511 
+0141   3080           00512     movlw 0x80
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x20}.
+0142   0720           00513     addwf 0xA0, W
+0143   0084           00514     movwf FSR
+0144   0800           00515     movf  INDF, W
+0145   00D0           00516     movwf 0x50              ; X = Stos X [SP]
+                      00517 
+0146   3090           00518     movlw 0x90
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x20}.
+0147   0720           00519     addwf 0xA0, W
+0148   0084           00520     movwf FSR
+0149   0800           00521     movf  INDF, W
+014A   00D1           00522     movwf 0x51              ; Y = Stos Y [SP]
+                      00523 
+                      00524     ; Sprawdź 4 sąsiadów (N/S/W/E)
+                      00525     ; --- North: Y-1 ---
+014B   08D1           00526     movf  0x51, F
+014C   1903           00527     btfsc STATUS, Z
+014D   2954           00528     goto  BFS_SOUTH         ; Y==0, pomiń
+014E   0851           00529     movf  0x51, W
+014F   00FB           00530     movwf 0x7B
+0150   03FB           00531     decf  0x7B, F           ; NY = Y-1
+0151   0850           00532     movf  0x50, W
+0152   00FA           00533     movwf 0x7A              ; NX = X
+0153   2172           00534     call  BFS_TRY_PUSH
+                      00535 
+0154                  00536 BFS_SOUTH:
+                      00537     ; --- South: Y+1 ---
+0154   0851           00538     movf  0x51, W
+0155   00FB           00539     movwf 0x7B
+0156   0AFB           00540     incf  0x7B, F           ; NY = Y+1
+0157   3005           00541     movlw d'5'
+0158   027B           00542     subwf 0x7B, W
+0159   1803           00543     btfsc STATUS, C
+015A   295E           00544     goto  BFS_WEST          ; Y+1 >= 5, pomiń
+015B   0850           00545     movf  0x50, W
+015C   00FA           00546     movwf 0x7A
+015D   2172           00547     call  BFS_TRY_PUSH
+                      00548 
+015E                  00549 BFS_WEST:
+                      00550     ; --- West: X-1 ---
+gpasm-1.4.0 #1107 (Jan  1 2021)  saper5x5.asm   5-6-2026  10:54:32          PAGE 12
+
+
+LOC    OBJECT CODE    LINE  SOURCE TEXT
+  VALUE
+
+015E   08D0           00551     movf  0x50, F
+015F   1903           00552     btfsc STATUS, Z
+0160   2967           00553     goto  BFS_EAST          ; X==0, pomiń
+0161   0850           00554     movf  0x50, W
+0162   00FA           00555     movwf 0x7A
+0163   03FA           00556     decf  0x7A, F           ; NX = X-1
+0164   0851           00557     movf  0x51, W
+0165   00FB           00558     movwf 0x7B              ; NY = Y
+0166   2172           00559     call  BFS_TRY_PUSH
+                      00560 
+0167                  00561 BFS_EAST:
+                      00562     ; --- East: X+1 ---
+0167   0850           00563     movf  0x50, W
+0168   00FA           00564     movwf 0x7A
+0169   0AFA           00565     incf  0x7A, F           ; NX = X+1
+016A   3005           00566     movlw d'5'
+016B   027A           00567     subwf 0x7A, W
+016C   1803           00568     btfsc STATUS, C
+016D   293D           00569     goto  BFS_LOOP          ; X+1 >= 5, pomiń; kontynuuj pętlę BFS
+016E   0851           00570     movf  0x51, W
+016F   00FB           00571     movwf 0x7B
+0170   2172           00572     call  BFS_TRY_PUSH
+0171   293D           00573     goto  BFS_LOOP
+                      00574 
+                      00575 ; =============================================================================
+                      00576 ; BFS_TRY_PUSH
+                      00577 ; Wejście: 0x7A=NX, 0x7B=NY (kandydat)
+                      00578 ; Jeśli kandydat nie odkryty, nie flagowany, nie mina:
+                      00579 ;   odkrywa go, rysuje, i jeśli ma 0 sąsiadów – wrzuca na stos
+                      00580 ; Zachowuje 0x50/0x51 (bieżące centrum BFS)
+                      00581 ; =============================================================================
+0172                  00582 BFS_TRY_PUSH:
+                      00583     ; Zachowaj centrum
+0172   0850           00584     movf  0x50, W
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x30}.
+0173   00B0           00585     movwf 0xB0
+0174   0851           00586     movf  0x51, W
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x31}.
+0175   00B1           00587     movwf 0xB1
+                      00588 
+                      00589     ; Ustaw kandydata jako bieżące pole
+0176   087A           00590     movf  0x7A, W
+0177   00D0           00591     movwf 0x50
+0178   087B           00592     movf  0x7B, W
+0179   00D1           00593     movwf 0x51
+                      00594 
+                      00595     ; Pomiń jeśli już odkryte
+017A   3028           00596     movlw 0x28
+017B   00D9           00597     movwf 0x59
+017C   20A9           00598     call  GET_BITMASK_AND_PTR
+017D   0858           00599     movf  0x58, W
+017E   0500           00600     andwf INDF, W
+017F   1D03           00601     btfss STATUS, Z
+gpasm-1.4.0 #1107 (Jan  1 2021)  saper5x5.asm   5-6-2026  10:54:32          PAGE 13
+
+
+LOC    OBJECT CODE    LINE  SOURCE TEXT
+  VALUE
+
+0180   29A6           00602     goto  BTP_RESTORE       ; Już odkryte
+                      00603 
+                      00604     ; Pomiń jeśli flagowane
+0181   3020           00605     movlw 0x20
+0182   00D9           00606     movwf 0x59
+0183   20A9           00607     call  GET_BITMASK_AND_PTR
+0184   0858           00608     movf  0x58, W
+0185   0500           00609     andwf INDF, W
+0186   1D03           00610     btfss STATUS, Z
+0187   29A6           00611     goto  BTP_RESTORE       ; Flagowane
+                      00612 
+                      00613     ; Pomiń jeśli mina
+0188   3024           00614     movlw 0x24
+0189   00D9           00615     movwf 0x59
+018A   20A9           00616     call  GET_BITMASK_AND_PTR
+018B   0858           00617     movf  0x58, W
+018C   0500           00618     andwf INDF, W
+018D   1D03           00619     btfss STATUS, Z
+018E   29A6           00620     goto  BTP_RESTORE       ; To mina – nie odkrywaj
+                      00621 
+                      00622     ; Odkryj kandydata
+018F   2119           00623     call  MARK_REVEALED
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x22}.
+0190   0AA2           00624     incf  0xA2, F
+                      00625 
+                      00626     ; Policz sąsiadów i narysuj
+0191   20CE           00627     call  COUNT_MINES       ; W = 0x7C = liczba
+0192   22DF           00628     call  GET_REVEALED_COLOR
+0193   228B           00629     call  DRAW_TILE
+                      00630 
+                      00631     ; Jeśli 0 sąsiadów i stos nie pełny (max 16) → push na stos
+0194   08FC           00632     movf  0x7C, F
+0195   1D03           00633     btfss STATUS, Z
+0196   29A6           00634     goto  BTP_RESTORE       ; Ma sąsiadów, nie rozszerzaj
+                      00635 
+                      00636     ; Sprawdź czy stos pełny
+0197   3010           00637     movlw d'16'
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x20}.
+0198   0220           00638     subwf 0xA0, W
+0199   1803           00639     btfsc STATUS, C
+019A   29A6           00640     goto  BTP_RESTORE       ; Stos pełny
+                      00641 
+                      00642     ; Push: Stos X [SP] = NX (= 0x50 teraz), Stos Y [SP] = NY (= 0x51)
+019B   3080           00643     movlw 0x80
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x20}.
+019C   0720           00644     addwf 0xA0, W
+019D   0084           00645     movwf FSR
+019E   0850           00646     movf  0x50, W
+019F   0080           00647     movwf INDF
+                      00648 
+01A0   3090           00649     movlw 0x90
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x20}.
+01A1   0720           00650     addwf 0xA0, W
+gpasm-1.4.0 #1107 (Jan  1 2021)  saper5x5.asm   5-6-2026  10:54:32          PAGE 14
+
+
+LOC    OBJECT CODE    LINE  SOURCE TEXT
+  VALUE
+
+01A2   0084           00651     movwf FSR
+01A3   0851           00652     movf  0x51, W
+01A4   0080           00653     movwf INDF
+                      00654 
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x20}.
+01A5   0AA0           00655     incf  0xA0, F
+                      00656 
+01A6                  00657 BTP_RESTORE:
+                      00658     ; Przywróć centrum
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x30}.
+01A6   0830           00659     movf  0xB0, W
+01A7   00D0           00660     movwf 0x50
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x31}.
+01A8   0831           00661     movf  0xB1, W
+01A9   00D1           00662     movwf 0x51
+01AA   0008           00663     return
+                      00664 
+                      00665 ; =============================================================================
+                      00666 ; CHECK_WIN
+                      00667 ; Sprawdza czy odkryte = 25 - 7 = 18 pól
+                      00668 ; =============================================================================
+01AB                  00669 CHECK_WIN:
+                      00670     ; Wymagana liczba odkrytych = 25 - liczba_min
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x23}.
+01AB   0823           00671     movf  0xA3, W           ; W = liczba min (7)
+01AC   00F6           00672     movwf 0x76
+01AD   3019           00673     movlw d'25'             ; Rozmiar siatki 5x5
+01AE   0276           00674     subwf 0x76, W           ; Hmm: subwf robi f-W; chcemy 25-miny
+                      00675     ; Poprawka: subwf 0x76, W = 0x76 - W = miny - 25 ... niedobrze
+                      00676     ; Użyj: W = 25 - miny
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x23}.
+01AF   0823           00677     movf  0xA3, W           ; W = miny
+01B0   3C19           00678     sublw d'25'             ; W = 25 - W (sublw: W = k - W)
+                      00679     ; Teraz W = 25 - miny = wymagana liczba odkrytych
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x22}.
+01B1   0222           00680     subwf 0xA2, W           ; W = odkryte - wymagane (jeśli =0 → wygrana)
+01B2   1D03           00681     btfss STATUS, Z
+01B3   0008           00682     return                  ; Jeszcze nie wygrał
+                      00683 
+                      00684     ; --- WYGRANA ---
+01B4   3001           00685     movlw 0x01
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x21}.
+01B5   00A1           00686     movwf 0xA1
+                      00687 
+01B6   3000           00688     movlw 0x00
+01B7   00D0           00689     movwf 0x50
+01B8                  00690 WIN_REVEAL_X:
+01B8   3000           00691     movlw 0x00
+01B9   00D1           00692     movwf 0x51
+01BA                  00693 WIN_REVEAL_Y:
+01BA   3007           00694     movlw 0x07
+01BB   00E4           00695     movwf 0x64
+01BC   30E0           00696     movlw 0xE0
+gpasm-1.4.0 #1107 (Jan  1 2021)  saper5x5.asm   5-6-2026  10:54:32          PAGE 15
+
+
+LOC    OBJECT CODE    LINE  SOURCE TEXT
+  VALUE
+
+01BD   00E5           00697     movwf 0x65
+01BE   228B           00698     call  DRAW_TILE
+01BF   0AD1           00699     incf  0x51, F
+01C0   3005           00700     movlw d'5'
+01C1   0251           00701     subwf 0x51, W
+01C2   1D03           00702     btfss STATUS, Z
+01C3   29BA           00703     goto  WIN_REVEAL_Y
+01C4   0AD0           00704     incf  0x50, F
+01C5   3005           00705     movlw d'5'
+01C6   0250           00706     subwf 0x50, W
+01C7   1D03           00707     btfss STATUS, Z
+01C8   29B8           00708     goto  WIN_REVEAL_X
+01C9   0008           00709     return
+                      00710 
+                      00711 ; =============================================================================
+                      00712 ; DRAW_LEGEND
+                      00713 ; 8 kolorowych kwadratów (0-7 sąsiadów) + kwadrat miny
+                      00714 ; y0=260, y1=273 (14px), x0=8+i*24, x1=x0+13
+                      00715 ; Kolory:
+                      00716 ;   0=Czarny, 1=Zielony, 2=Niebieski(fix!), 3=Pomarańcz, 4=Czerwony,
+                      00717 ;   5=Różowy,  6=Jasnoniebieski, 7=Fioletowy, MINE=Czerwony(wyróżnik)
+                      00718 ; =============================================================================
+01CA                  00719 DRAW_LEGEND:
+                      00720     ; Wpis 0 - Czarny
+01CA   3000           00721     movlw 0x00
+01CB   00E4           00722     movwf 0x64
+01CC   00E5           00723     movwf 0x65
+01CD   3000           00724     movlw d'0'
+01CE   00D0           00725     movwf 0x50
+01CF   220B           00726     call  DL_DRAW_BOX
+                      00727 
+                      00728     ; Wpis 1 - Zielony
+01D0   3007           00729     movlw 0x07
+01D1   00E4           00730     movwf 0x64
+01D2   30E0           00731     movlw 0xE0
+01D3   00E5           00732     movwf 0x65
+01D4   3001           00733     movlw d'1'
+01D5   00D0           00734     movwf 0x50
+01D6   220B           00735     call  DL_DRAW_BOX
+                      00736 
+                      00737     ; Wpis 2 - Niebieski (0x001F) ← POPRAWKA: było żółte/białe
+01D7   3000           00738     movlw 0x00
+01D8   00E4           00739     movwf 0x64
+01D9   301F           00740     movlw 0x1F
+01DA   00E5           00741     movwf 0x65
+01DB   3002           00742     movlw d'2'
+01DC   00D0           00743     movwf 0x50
+01DD   220B           00744     call  DL_DRAW_BOX
+                      00745 
+                      00746     ; Wpis 3 - Pomarańczowy
+01DE   30FC           00747     movlw 0xFC
+01DF   00E4           00748     movwf 0x64
+01E0   3000           00749     movlw 0x00
+gpasm-1.4.0 #1107 (Jan  1 2021)  saper5x5.asm   5-6-2026  10:54:32          PAGE 16
+
+
+LOC    OBJECT CODE    LINE  SOURCE TEXT
+  VALUE
+
+01E1   00E5           00750     movwf 0x65
+01E2   3003           00751     movlw d'3'
+01E3   00D0           00752     movwf 0x50
+01E4   220B           00753     call  DL_DRAW_BOX
+                      00754 
+                      00755     ; Wpis 4 - Czerwony
+01E5   30F8           00756     movlw 0xF8
+01E6   00E4           00757     movwf 0x64
+01E7   3000           00758     movlw 0x00
+01E8   00E5           00759     movwf 0x65
+01E9   3004           00760     movlw d'4'
+01EA   00D0           00761     movwf 0x50
+01EB   220B           00762     call  DL_DRAW_BOX
+                      00763 
+                      00764     ; Wpis 5 - Różowy
+01EC   30F8           00765     movlw 0xF8
+01ED   00E4           00766     movwf 0x64
+01EE   301F           00767     movlw 0x1F
+01EF   00E5           00768     movwf 0x65
+01F0   3005           00769     movlw d'5'
+01F1   00D0           00770     movwf 0x50
+01F2   220B           00771     call  DL_DRAW_BOX
+                      00772 
+                      00773     ; Wpis 6 - Jasnoniebieski (0x07FF cyan)
+01F3   3007           00774     movlw 0x07
+01F4   00E4           00775     movwf 0x64
+01F5   30FF           00776     movlw 0xFF
+01F6   00E5           00777     movwf 0x65
+01F7   3006           00778     movlw d'6'
+01F8   00D0           00779     movwf 0x50
+01F9   220B           00780     call  DL_DRAW_BOX
+                      00781 
+                      00782     ; Wpis 7 - Fioletowy
+01FA   3078           00783     movlw 0x78
+01FB   00E4           00784     movwf 0x64
+01FC   301F           00785     movlw 0x1F
+01FD   00E5           00786     movwf 0x65
+01FE   3007           00787     movlw d'7'
+01FF   00D0           00788     movwf 0x50
+0200   220B           00789     call  DL_DRAW_BOX
+                      00790 
+                      00791     ; Wpis MINE - Jasnoczerw (wyróżnik)
+0201   30F8           00792     movlw 0xF8
+0202   00E4           00793     movwf 0x64
+0203   3000           00794     movlw 0x00
+0204   00E5           00795     movwf 0x65
+0205   3008           00796     movlw d'8'
+0206   00D0           00797     movwf 0x50
+0207   220B           00798     call  DL_DRAW_BOX
+                      00799 
+0208   01D0           00800     clrf  0x50
+0209   01D1           00801     clrf  0x51
+020A   0008           00802     return
+gpasm-1.4.0 #1107 (Jan  1 2021)  saper5x5.asm   5-6-2026  10:54:32          PAGE 17
+
+
+LOC    OBJECT CODE    LINE  SOURCE TEXT
+  VALUE
+
+                      00803 
+                      00804 ; DL_DRAW_BOX: kwadrat 14x14 legendy
+                      00805 ; Wejście: 0x50=indeks (0-8), 0x64/0x65=kolor
+                      00806 ; x0=8+idx*24, x1=x0+13, y0=260, y1=273
+020B                  00807 DL_DRAW_BOX:
+                      00808     ; x0 = index*24 + 8
+                      00809     ; index*24 = index*16 + index*8
+020B   0850           00810     movf  0x50, W
+020C   00F5           00811     movwf 0x75
+020D   0E75           00812     swapf 0x75, W
+020E   39F0           00813     andlw 0xF0              ; W = index*16
+020F   00E0           00814     movwf 0x60
+                      00815 
+0210   0850           00816     movf  0x50, W
+0211   00F5           00817     movwf 0x75
+0212   1003           00818     bcf   STATUS, C
+0213   0DF5           00819     rlf   0x75, F           ; *2
+0214   1003           00820     bcf   STATUS, C
+0215   0DF5           00821     rlf   0x75, F           ; *4
+0216   1003           00822     bcf   STATUS, C
+0217   0DF5           00823     rlf   0x75, F           ; *8
+0218   0875           00824     movf  0x75, W
+0219   07E0           00825     addwf 0x60, F           ; 0x60 = index*24
+021A   3008           00826     movlw d'8'
+021B   07E0           00827     addwf 0x60, F           ; 0x60 = index*24 + 8
+                      00828 
+021C   0860           00829     movf  0x60, W
+021D   3E0D           00830     addlw d'13'
+021E   00E1           00831     movwf 0x61              ; x1 = x0+13
+                      00832 
+Warning[202]: Argument out of range. Least significant bits used. 260 (0x104) => 4 (0x4)
+021F   3004           00833     movlw d'260'            ; y0 (poniżej siatki 5x5)
+0220   00E2           00834     movwf 0x62
+0221   3000           00835     movlw d'0'              ; Uwaga: 260 > 255, wysyłamy high=0x01, low=0x04
+                      00836     ; y0=260: high=0x01, low=0x04; y1=273: high=0x01, low=0x11
+                      00837     ; Obsłuż to bezpośrednio w wysyłaniu
+                      00838 
+0222   302A           00839     movlw 0x2A
+0223   2343           00840     call  SEND_CMD
+0224   3000           00841     movlw 0x00
+0225   2346           00842     call  SEND_DAT
+0226   0860           00843     movf  0x60, W
+0227   2346           00844     call  SEND_DAT
+0228   3000           00845     movlw 0x00
+0229   2346           00846     call  SEND_DAT
+022A   0861           00847     movf  0x61, W
+022B   2346           00848     call  SEND_DAT
+                      00849 
+022C   302B           00850     movlw 0x2B
+022D   2343           00851     call  SEND_CMD
+022E   3001           00852     movlw 0x01              ; y0 high byte (260 = 0x0104)
+022F   2346           00853     call  SEND_DAT
+0230   3004           00854     movlw 0x04              ; y0 low byte
+gpasm-1.4.0 #1107 (Jan  1 2021)  saper5x5.asm   5-6-2026  10:54:32          PAGE 18
+
+
+LOC    OBJECT CODE    LINE  SOURCE TEXT
+  VALUE
+
+0231   2346           00855     call  SEND_DAT
+0232   3001           00856     movlw 0x01              ; y1 high byte (273 = 0x0111)
+0233   2346           00857     call  SEND_DAT
+0234   3011           00858     movlw 0x11              ; y1 low byte
+0235   2346           00859     call  SEND_DAT
+                      00860 
+0236   302C           00861     movlw 0x2C
+0237   2343           00862     call  SEND_CMD
+0238   1487           00863     bsf   PORTC, 1
+0239   1107           00864     bcf   PORTC, 2
+023A   300E           00865     movlw d'14'
+023B   00E6           00866     movwf 0x66
+023C                  00867 DL_LOOP_Y:
+023C   300E           00868     movlw d'14'
+023D   00E7           00869     movwf 0x67
+023E                  00870 DL_LOOP_X:
+023E   118C           00871     bcf   PIR1, 3
+023F   0864           00872     movf  0x64, W
+0240   0093           00873     movwf SSPBUF
+0241                  00874 DL_WAIT1:
+0241   1D8C           00875     btfss PIR1, 3
+0242   2A41           00876     goto  DL_WAIT1
+0243   118C           00877     bcf   PIR1, 3
+0244   0865           00878     movf  0x65, W
+0245   0093           00879     movwf SSPBUF
+0246                  00880 DL_WAIT2:
+0246   1D8C           00881     btfss PIR1, 3
+0247   2A46           00882     goto  DL_WAIT2
+0248   0BE7           00883     decfsz 0x67, F
+0249   2A3E           00884     goto  DL_LOOP_X
+024A   0BE6           00885     decfsz 0x66, F
+024B   2A3C           00886     goto  DL_LOOP_Y
+024C   1507           00887     bsf   PORTC, 2
+024D   0008           00888     return
+                      00889 
+                      00890 ; =============================================================================
+                      00891 ; DRAW_GRID - rysuje siatkę 5x5 szarymi kafelkami
+                      00892 ; =============================================================================
+024E                  00893 DRAW_GRID:
+024E   3000           00894     movlw 0x00
+024F   00D0           00895     movwf 0x50
+0250                  00896 GRID_LOOP_X:
+0250   3000           00897     movlw 0x00
+0251   00D1           00898     movwf 0x51
+0252                  00899 GRID_LOOP_Y:
+0252   3084           00900     movlw 0x84
+0253   00E4           00901     movwf 0x64
+0254   3010           00902     movlw 0x10
+0255   00E5           00903     movwf 0x65
+0256   228B           00904     call  DRAW_TILE
+0257   0AD1           00905     incf  0x51, F
+0258   3005           00906     movlw d'5'
+0259   0251           00907     subwf 0x51, W
+gpasm-1.4.0 #1107 (Jan  1 2021)  saper5x5.asm   5-6-2026  10:54:32          PAGE 19
+
+
+LOC    OBJECT CODE    LINE  SOURCE TEXT
+  VALUE
+
+025A   1D03           00908     btfss STATUS, Z
+025B   2A52           00909     goto  GRID_LOOP_Y
+025C   0AD0           00910     incf  0x50, F
+025D   3005           00911     movlw d'5'
+025E   0250           00912     subwf 0x50, W
+025F   1D03           00913     btfss STATUS, Z
+0260   2A50           00914     goto  GRID_LOOP_X
+0261   0008           00915     return
+                      00916 
+                      00917 ; =============================================================================
+                      00918 ; UPDATE_CURSOR - odrysowuje stare pole, rysuje kursor na nowej pozycji
+                      00919 ; =============================================================================
+0262                  00920 UPDATE_CURSOR:
+0262   0850           00921     movf  0x50, W
+0263   0654           00922     xorwf 0x54, W
+0264   1D03           00923     btfss STATUS, Z
+0265   2A6B           00924     goto  DO_UPDATE
+0266   0851           00925     movf  0x51, W
+0267   0655           00926     xorwf 0x55, W
+0268   1D03           00927     btfss STATUS, Z
+0269   2A6B           00928     goto  DO_UPDATE
+026A   0008           00929     return
+                      00930 
+026B                  00931 DO_UPDATE:
+                      00932     ; Odrysuj stare pole (0x50/0x51 = stara pozycja)
+026B   210D           00933     call  IS_REVEALED
+026C   1D03           00934     btfss STATUS, Z
+026D   2A7F           00935     goto  DU_WAS_REVEALED
+                      00936 
+                      00937     ; Nie odkryte – sprawdź flagę
+026E   3020           00938     movlw 0x20
+026F   00D9           00939     movwf 0x59
+0270   20A9           00940     call  GET_BITMASK_AND_PTR
+0271   0858           00941     movf  0x58, W
+0272   0500           00942     andwf INDF, W
+0273   1D03           00943     btfss STATUS, Z
+0274   2A7A           00944     goto  DU_DRAW_YELLOW
+                      00945 
+0275                  00946 DU_DRAW_GREY:
+0275   3084           00947     movlw 0x84
+0276   00E4           00948     movwf 0x64
+0277   3010           00949     movlw 0x10
+0278   00E5           00950     movwf 0x65
+0279   2A81           00951     goto  DU_DO_DRAW
+                      00952 
+027A                  00953 DU_DRAW_YELLOW:
+027A   30FF           00954     movlw 0xFF
+027B   00E4           00955     movwf 0x64
+027C   30E0           00956     movlw 0xE0
+027D   00E5           00957     movwf 0x65
+027E   2A81           00958     goto  DU_DO_DRAW
+                      00959 
+027F                  00960 DU_WAS_REVEALED:
+gpasm-1.4.0 #1107 (Jan  1 2021)  saper5x5.asm   5-6-2026  10:54:32          PAGE 20
+
+
+LOC    OBJECT CODE    LINE  SOURCE TEXT
+  VALUE
+
+027F   20CE           00961     call  COUNT_MINES       ; Wynik w W i 0x7C (0x50/0x51 = stara poz.)
+0280   22DF           00962     call  GET_REVEALED_COLOR
+                      00963 
+0281                  00964 DU_DO_DRAW:
+0281   228B           00965     call  DRAW_TILE
+                      00966 
+                      00967     ; Rysuj kursor na nowej pozycji
+0282   0854           00968     movf  0x54, W
+0283   00D0           00969     movwf 0x50
+0284   0855           00970     movf  0x55, W
+0285   00D1           00971     movwf 0x51
+0286   30FF           00972     movlw 0xFF
+0287   00E4           00973     movwf 0x64
+0288   00E5           00974     movwf 0x65
+0289   228B           00975     call  DRAW_TILE
+028A   0008           00976     return
+                      00977 
+                      00978 ; =============================================================================
+                      00979 ; DRAW_TILE
+                      00980 ; Wejście: 0x50=X (0-4), 0x51=Y (0-4), 0x64/0x65=kolor RGB565
+                      00981 ; Rysuje kafelek 22x22 pikseli.
+                      00982 ; x0 = X*24 + 60,  x1 = x0+21
+                      00983 ; y0 = Y*24 + 80,  y1 = y0+21
+                      00984 ; =============================================================================
+028B                  00985 DRAW_TILE:
+                      00986     ; --- Oblicz x0 = X*24 + 60 ---
+                      00987     ; X*24 = X*16 + X*8
+028B   0850           00988     movf  0x50, W
+028C   00F5           00989     movwf 0x75
+028D   0E75           00990     swapf 0x75, W
+028E   39F0           00991     andlw 0xF0              ; W = X*16
+028F   00E0           00992     movwf 0x60              ; 0x60 = X*16
+                      00993 
+0290   0850           00994     movf  0x50, W
+0291   00F5           00995     movwf 0x75
+0292   1003           00996     bcf   STATUS, C
+0293   0DF5           00997     rlf   0x75, F           ; 0x75 = X*2
+0294   1003           00998     bcf   STATUS, C
+0295   0DF5           00999     rlf   0x75, F           ; 0x75 = X*4
+0296   1003           01000     bcf   STATUS, C
+0297   0DF5           01001     rlf   0x75, F           ; 0x75 = X*8
+0298   0875           01002     movf  0x75, W
+0299   07E0           01003     addwf 0x60, F           ; 0x60 = X*24
+                      01004 
+029A   303C           01005     movlw d'60'
+029B   07E0           01006     addwf 0x60, F           ; 0x60 = X*24 + 60 = x0
+029C   0860           01007     movf  0x60, W
+029D   3E15           01008     addlw d'21'
+029E   00E1           01009     movwf 0x61              ; x1 = x0+21
+                      01010 
+                      01011     ; --- Oblicz y0 = Y*24 + 80 ---
+029F   0851           01012     movf  0x51, W
+02A0   00F5           01013     movwf 0x75
+gpasm-1.4.0 #1107 (Jan  1 2021)  saper5x5.asm   5-6-2026  10:54:32          PAGE 21
+
+
+LOC    OBJECT CODE    LINE  SOURCE TEXT
+  VALUE
+
+02A1   0E75           01014     swapf 0x75, W
+02A2   39F0           01015     andlw 0xF0              ; W = Y*16
+02A3   00E2           01016     movwf 0x62
+                      01017 
+02A4   0851           01018     movf  0x51, W
+02A5   00F5           01019     movwf 0x75
+02A6   1003           01020     bcf   STATUS, C
+02A7   0DF5           01021     rlf   0x75, F           ; Y*2
+02A8   1003           01022     bcf   STATUS, C
+02A9   0DF5           01023     rlf   0x75, F           ; Y*4
+02AA   1003           01024     bcf   STATUS, C
+02AB   0DF5           01025     rlf   0x75, F           ; Y*8
+02AC   0875           01026     movf  0x75, W
+02AD   07E2           01027     addwf 0x62, F           ; 0x62 = Y*24
+                      01028 
+02AE   3050           01029     movlw d'80'
+02AF   07E2           01030     addwf 0x62, F           ; 0x62 = Y*24 + 80 = y0
+02B0   0862           01031     movf  0x62, W
+02B1   3E15           01032     addlw d'21'
+02B2   00E3           01033     movwf 0x63              ; y1 = y0+21
+                      01034 
+                      01035     ; --- Wyślij okno do LCD ---
+02B3   302A           01036     movlw 0x2A
+02B4   2343           01037     call  SEND_CMD
+02B5   3000           01038     movlw 0x00
+02B6   2346           01039     call  SEND_DAT
+02B7   0860           01040     movf  0x60, W
+02B8   2346           01041     call  SEND_DAT
+02B9   3000           01042     movlw 0x00
+02BA   2346           01043     call  SEND_DAT
+02BB   0861           01044     movf  0x61, W
+02BC   2346           01045     call  SEND_DAT
+                      01046 
+02BD   302B           01047     movlw 0x2B
+02BE   2343           01048     call  SEND_CMD
+02BF   3000           01049     movlw 0x00
+02C0   2346           01050     call  SEND_DAT
+02C1   0862           01051     movf  0x62, W
+02C2   2346           01052     call  SEND_DAT
+02C3   3000           01053     movlw 0x00
+02C4   2346           01054     call  SEND_DAT
+02C5   0863           01055     movf  0x63, W
+02C6   2346           01056     call  SEND_DAT
+                      01057 
+02C7   302C           01058     movlw 0x2C
+02C8   2343           01059     call  SEND_CMD
+02C9   1487           01060     bsf   PORTC, 1
+02CA   1107           01061     bcf   PORTC, 2
+                      01062 
+02CB   3016           01063     movlw d'22'
+02CC   00E6           01064     movwf 0x66
+02CD                  01065 LOOP_RECT_Y:
+02CD   3016           01066     movlw d'22'
+gpasm-1.4.0 #1107 (Jan  1 2021)  saper5x5.asm   5-6-2026  10:54:32          PAGE 22
+
+
+LOC    OBJECT CODE    LINE  SOURCE TEXT
+  VALUE
+
+02CE   00E7           01067     movwf 0x67
+02CF                  01068 LOOP_RECT_X:
+02CF   118C           01069     bcf   PIR1, 3
+02D0   0864           01070     movf  0x64, W
+02D1   0093           01071     movwf SSPBUF
+02D2                  01072 WAIT_C1:
+02D2   1D8C           01073     btfss PIR1, 3
+02D3   2AD2           01074     goto  WAIT_C1
+02D4   118C           01075     bcf   PIR1, 3
+02D5   0865           01076     movf  0x65, W
+02D6   0093           01077     movwf SSPBUF
+02D7                  01078 WAIT_C2:
+02D7   1D8C           01079     btfss PIR1, 3
+02D8   2AD7           01080     goto  WAIT_C2
+02D9   0BE7           01081     decfsz 0x67, F
+02DA   2ACF           01082     goto  LOOP_RECT_X
+02DB   0BE6           01083     decfsz 0x66, F
+02DC   2ACD           01084     goto  LOOP_RECT_Y
+02DD   1507           01085     bsf   PORTC, 2
+02DE   0008           01086     return
+                      01087 
+                      01088 ; =============================================================================
+                      01089 ; GET_REVEALED_COLOR
+                      01090 ; Wejście: W = liczba sąsiednich min (0-8)
+                      01091 ; Wyjście: 0x64/0x65 = kolor RGB565
+                      01092 ;   0 -> Czarny    (0x0000)
+                      01093 ;   1 -> Zielony   (0x07E0)
+                      01094 ;   2 -> Niebieski (0x001F)  ← POPRAWKA
+                      01095 ;   3 -> Pomarańcz (0xFC00)
+                      01096 ;   4 -> Czerwony  (0xF800)
+                      01097 ;   5 -> Różowy    (0xF81F)
+                      01098 ;   6 -> Cyan      (0x07FF)
+                      01099 ;   7 -> Fioletowy (0x781F)
+                      01100 ;   8 -> Brązowy   (0x8400)
+                      01101 ; =============================================================================
+02DF                  01102 GET_REVEALED_COLOR:
+02DF   00F6           01103     movwf 0x76
+02E0   08F6           01104     movf  0x76, F
+02E1   1903           01105     btfsc STATUS, Z
+02E2   2B00           01106     goto  GRC_0
+02E3   3001           01107     movlw 0x01
+02E4   0276           01108     subwf 0x76, W
+02E5   1903           01109     btfsc STATUS, Z
+02E6   2B04           01110     goto  GRC_1
+02E7   3002           01111     movlw 0x02
+02E8   0276           01112     subwf 0x76, W
+02E9   1903           01113     btfsc STATUS, Z
+02EA   2B09           01114     goto  GRC_2
+02EB   3003           01115     movlw 0x03
+02EC   0276           01116     subwf 0x76, W
+02ED   1903           01117     btfsc STATUS, Z
+02EE   2B0E           01118     goto  GRC_3
+02EF   3004           01119     movlw 0x04
+gpasm-1.4.0 #1107 (Jan  1 2021)  saper5x5.asm   5-6-2026  10:54:32          PAGE 23
+
+
+LOC    OBJECT CODE    LINE  SOURCE TEXT
+  VALUE
+
+02F0   0276           01120     subwf 0x76, W
+02F1   1903           01121     btfsc STATUS, Z
+02F2   2B13           01122     goto  GRC_4
+02F3   3005           01123     movlw 0x05
+02F4   0276           01124     subwf 0x76, W
+02F5   1903           01125     btfsc STATUS, Z
+02F6   2B18           01126     goto  GRC_5
+02F7   3006           01127     movlw 0x06
+02F8   0276           01128     subwf 0x76, W
+02F9   1903           01129     btfsc STATUS, Z
+02FA   2B1D           01130     goto  GRC_6
+02FB   3007           01131     movlw 0x07
+02FC   0276           01132     subwf 0x76, W
+02FD   1903           01133     btfsc STATUS, Z
+02FE   2B22           01134     goto  GRC_7
+02FF   2B27           01135     goto  GRC_8
+                      01136 
+0300                  01137 GRC_0:
+0300   3000           01138     movlw 0x00
+0301   00E4           01139     movwf 0x64
+0302   00E5           01140     movwf 0x65
+0303   0008           01141     return
+0304                  01142 GRC_1:
+0304   3007           01143     movlw 0x07
+0305   00E4           01144     movwf 0x64
+0306   30E0           01145     movlw 0xE0
+0307   00E5           01146     movwf 0x65
+0308   0008           01147     return
+0309                  01148 GRC_2:                      ; Niebieski 0x001F ← POPRAWKA
+0309   3000           01149     movlw 0x00
+030A   00E4           01150     movwf 0x64
+030B   301F           01151     movlw 0x1F
+030C   00E5           01152     movwf 0x65
+030D   0008           01153     return
+030E                  01154 GRC_3:
+030E   30FC           01155     movlw 0xFC
+030F   00E4           01156     movwf 0x64
+0310   3000           01157     movlw 0x00
+0311   00E5           01158     movwf 0x65
+0312   0008           01159     return
+0313                  01160 GRC_4:
+0313   30F8           01161     movlw 0xF8
+0314   00E4           01162     movwf 0x64
+0315   3000           01163     movlw 0x00
+0316   00E5           01164     movwf 0x65
+0317   0008           01165     return
+0318                  01166 GRC_5:
+0318   30F8           01167     movlw 0xF8
+0319   00E4           01168     movwf 0x64
+031A   301F           01169     movlw 0x1F
+031B   00E5           01170     movwf 0x65
+031C   0008           01171     return
+031D                  01172 GRC_6:                      ; Cyan 0x07FF
+gpasm-1.4.0 #1107 (Jan  1 2021)  saper5x5.asm   5-6-2026  10:54:32          PAGE 24
+
+
+LOC    OBJECT CODE    LINE  SOURCE TEXT
+  VALUE
+
+031D   3007           01173     movlw 0x07
+031E   00E4           01174     movwf 0x64
+031F   30FF           01175     movlw 0xFF
+0320   00E5           01176     movwf 0x65
+0321   0008           01177     return
+0322                  01178 GRC_7:
+0322   3078           01179     movlw 0x78
+0323   00E4           01180     movwf 0x64
+0324   301F           01181     movlw 0x1F
+0325   00E5           01182     movwf 0x65
+0326   0008           01183     return
+0327                  01184 GRC_8:
+0327   3084           01185     movlw 0x84
+0328   00E4           01186     movwf 0x64
+0329   3000           01187     movlw 0x00
+032A   00E5           01188     movwf 0x65
+032B   0008           01189     return
+                      01190 
+                      01191 ; =============================================================================
+                      01192 ; REVEAL_ALL_MINES - odkrywa wszystkie miny (Game Over)
+                      01193 ; =============================================================================
+032C                  01194 REVEAL_ALL_MINES:
+032C   3000           01195     movlw 0x00
+032D   00D0           01196     movwf 0x50
+032E                  01197 RAM_LOOP_X:
+032E   3000           01198     movlw 0x00
+032F   00D1           01199     movwf 0x51
+0330                  01200 RAM_LOOP_Y:
+0330   2113           01201     call  IS_MINE
+0331   1903           01202     btfsc STATUS, Z
+0332   2B38           01203     goto  RAM_NEXT
+0333   30F8           01204     movlw 0xF8
+0334   00E4           01205     movwf 0x64
+0335   3000           01206     movlw 0x00
+0336   00E5           01207     movwf 0x65
+0337   228B           01208     call  DRAW_TILE
+0338                  01209 RAM_NEXT:
+0338   0AD1           01210     incf  0x51, F
+0339   3005           01211     movlw d'5'
+033A   0251           01212     subwf 0x51, W
+033B   1D03           01213     btfss STATUS, Z
+033C   2B30           01214     goto  RAM_LOOP_Y
+033D   0AD0           01215     incf  0x50, F
+033E   3005           01216     movlw d'5'
+033F   0250           01217     subwf 0x50, W
+0340   1D03           01218     btfss STATUS, Z
+0341   2B2E           01219     goto  RAM_LOOP_X
+0342   0008           01220     return
+                      01221 
+                      01222 ; =============================================================================
+                      01223 ; SPI I LCD
+                      01224 ; =============================================================================
+0343                  01225 SEND_CMD:
+gpasm-1.4.0 #1107 (Jan  1 2021)  saper5x5.asm   5-6-2026  10:54:32          PAGE 25
+
+
+LOC    OBJECT CODE    LINE  SOURCE TEXT
+  VALUE
+
+0343   1087           01226     bcf   PORTC, 1
+0344   1107           01227     bcf   PORTC, 2
+0345   2B48           01228     goto  SPI_TX
+0346                  01229 SEND_DAT:
+0346   1487           01230     bsf   PORTC, 1
+0347   1107           01231     bcf   PORTC, 2
+0348                  01232 SPI_TX:
+0348   118C           01233     bcf   PIR1, 3
+0349   0093           01234     movwf SSPBUF
+034A                  01235 SPI_WAIT:
+034A   1D8C           01236     btfss PIR1, 3
+034B   2B4A           01237     goto  SPI_WAIT
+034C   1507           01238     bsf   PORTC, 2
+034D   0008           01239     return
+                      01240 
+                      01241 ; =============================================================================
+                      01242 ; CHECK_BUTTONS
+                      01243 ; RB0=UP, RB1=RIGHT, RB2=DOWN, RB3=LEFT, RB4=FLAG, RB6=REVEAL, RB7=RESTART
+                      01244 ; =============================================================================
+034E                  01245 CHECK_BUTTONS:
+                      01246     ; RB7=RESTART działa zawsze
+034E   1F86           01247     btfss PORTB, 7
+034F   2B52           01248     goto  CB_SKIP_RESTART
+0350   23C7           01249     call  DO_RESTART
+0351   0008           01250     return
+0352                  01251 CB_SKIP_RESTART:
+                      01252 
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x21}.
+0352   08A1           01253     movf  0xA1, F
+0353   1D03           01254     btfss STATUS, Z
+0354   0008           01255     return                  ; Gra skończona, ignoruj
+                      01256 
+0355   0850           01257     movf  0x50, W
+0356   00D4           01258     movwf 0x54
+0357   0851           01259     movf  0x51, W
+0358   00D5           01260     movwf 0x55
+                      01261 
+0359                  01262 CHECK_RIGHT:
+0359   1D86           01263     btfss PORTB, 3
+035A   2B61           01264     goto  CHECK_LEFT
+035B   3004           01265     movlw d'4'              ; Max X = 4 (siatka 5x5)
+035C   0254           01266     subwf 0x54, W
+035D   1903           01267     btfsc STATUS, Z
+035E   2BC1           01268     goto  WAIT_RELEASE
+035F   0AD4           01269     incf  0x54, F
+0360   2BC1           01270     goto  WAIT_RELEASE
+                      01271 
+0361                  01272 CHECK_LEFT:
+0361   1C86           01273     btfss PORTB, 1
+0362   2B68           01274     goto  CHECK_DOWN
+0363   0854           01275     movf  0x54, W
+0364   1903           01276     btfsc STATUS, Z
+0365   2BC1           01277     goto  WAIT_RELEASE
+gpasm-1.4.0 #1107 (Jan  1 2021)  saper5x5.asm   5-6-2026  10:54:32          PAGE 26
+
+
+LOC    OBJECT CODE    LINE  SOURCE TEXT
+  VALUE
+
+0366   03D4           01278     decf  0x54, F
+0367   2BC1           01279     goto  WAIT_RELEASE
+                      01280 
+0368                  01281 CHECK_DOWN:
+0368   1D06           01282     btfss PORTB, 2
+0369   2B70           01283     goto  CHECK_UP
+036A   3004           01284     movlw d'4'              ; Max Y = 4
+036B   0255           01285     subwf 0x55, W
+036C   1903           01286     btfsc STATUS, Z
+036D   2BC1           01287     goto  WAIT_RELEASE
+036E   0AD5           01288     incf  0x55, F
+036F   2BC1           01289     goto  WAIT_RELEASE
+                      01290 
+0370                  01291 CHECK_UP:
+0370   1C06           01292     btfss PORTB, 0
+0371   2B77           01293     goto  CHECK_FLAG
+0372   0855           01294     movf  0x55, W
+0373   1903           01295     btfsc STATUS, Z
+0374   2BC1           01296     goto  WAIT_RELEASE
+0375   03D5           01297     decf  0x55, F
+0376   2BC1           01298     goto  WAIT_RELEASE
+                      01299 
+0377                  01300 CHECK_FLAG:
+0377   1E06           01301     btfss PORTB, 4
+0378   2B96           01302     goto  CHECK_REVEAL_BTN
+                      01303 
+                      01304     ; Nie można flagować odkrytego
+0379   210D           01305     call  IS_REVEALED
+037A   1D03           01306     btfss STATUS, Z
+037B   2BC1           01307     goto  WAIT_RELEASE
+                      01308 
+                      01309     ; Przełącz flagę
+037C   3020           01310     movlw 0x20
+037D   00D9           01311     movwf 0x59
+037E   20A9           01312     call  GET_BITMASK_AND_PTR
+037F   0858           01313     movf  0x58, W
+0380   0680           01314     xorwf INDF, F
+                      01315 
+0381   0858           01316     movf  0x58, W
+0382   0500           01317     andwf INDF, W
+0383   1903           01318     btfsc STATUS, Z
+0384   2B8A           01319     goto  CF_DRAW_UNFLAGGED
+0385                  01320 CF_DRAW_FLAGGED:
+0385   30FF           01321     movlw 0xFF
+0386   00E4           01322     movwf 0x64
+0387   30E0           01323     movlw 0xE0
+0388   00E5           01324     movwf 0x65
+0389   2B8E           01325     goto  CF_DO_BLINK
+038A                  01326 CF_DRAW_UNFLAGGED:
+038A   3084           01327     movlw 0x84
+038B   00E4           01328     movwf 0x64
+038C   3010           01329     movlw 0x10
+038D   00E5           01330     movwf 0x65
+gpasm-1.4.0 #1107 (Jan  1 2021)  saper5x5.asm   5-6-2026  10:54:32          PAGE 27
+
+
+LOC    OBJECT CODE    LINE  SOURCE TEXT
+  VALUE
+
+038E                  01331 CF_DO_BLINK:
+038E   228B           01332     call  DRAW_TILE
+038F   23E4           01333     call  DELAY_20MS
+0390   23E4           01334     call  DELAY_20MS
+0391   30FF           01335     movlw 0xFF
+0392   00E4           01336     movwf 0x64
+0393   00E5           01337     movwf 0x65
+0394   228B           01338     call  DRAW_TILE
+0395   2BC1           01339     goto  WAIT_RELEASE
+                      01340 
+0396                  01341 CHECK_REVEAL_BTN:
+0396   1F06           01342     btfss PORTB, 6
+0397   2BC6           01343     goto  END_CHECK
+                      01344 
+                      01345     ; Ignoruj jeśli flaga
+0398   3020           01346     movlw 0x20
+0399   00D9           01347     movwf 0x59
+039A   20A9           01348     call  GET_BITMASK_AND_PTR
+039B   0858           01349     movf  0x58, W
+039C   0500           01350     andwf INDF, W
+039D   1D03           01351     btfss STATUS, Z
+039E   2BC1           01352     goto  WAIT_RELEASE
+                      01353 
+                      01354     ; Ignoruj jeśli już odkryte
+039F   210D           01355     call  IS_REVEALED
+03A0   1D03           01356     btfss STATUS, Z
+03A1   2BC1           01357     goto  WAIT_RELEASE
+                      01358 
+                      01359     ; Mina?
+03A2   2113           01360     call  IS_MINE
+03A3   1903           01361     btfsc STATUS, Z
+03A4   2BBF           01362     goto  DO_REVEAL_SAFE
+                      01363 
+                      01364     ; --- PRZEGRANA ---
+03A5   3002           01365     movlw 0x02
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x21}.
+03A6   00A1           01366     movwf 0xA1
+03A7   30F8           01367     movlw 0xF8
+03A8   00E4           01368     movwf 0x64
+03A9   3000           01369     movlw 0x00
+03AA   00E5           01370     movwf 0x65
+03AB   228B           01371     call  DRAW_TILE
+03AC   232C           01372     call  REVEAL_ALL_MINES
+                      01373 
+03AD   3003           01374     movlw d'3'
+03AE   00F5           01375     movwf 0x75
+03AF                  01376 BLINK_LOOP:
+03AF   23E4           01377     call  DELAY_20MS
+03B0   23E4           01378     call  DELAY_20MS
+03B1   30FF           01379     movlw 0xFF
+03B2   00E4           01380     movwf 0x64
+03B3   00E5           01381     movwf 0x65
+03B4   228B           01382     call  DRAW_TILE
+gpasm-1.4.0 #1107 (Jan  1 2021)  saper5x5.asm   5-6-2026  10:54:32          PAGE 28
+
+
+LOC    OBJECT CODE    LINE  SOURCE TEXT
+  VALUE
+
+03B5   23E4           01383     call  DELAY_20MS
+03B6   23E4           01384     call  DELAY_20MS
+03B7   30F8           01385     movlw 0xF8
+03B8   00E4           01386     movwf 0x64
+03B9   3000           01387     movlw 0x00
+03BA   00E5           01388     movwf 0x65
+03BB   228B           01389     call  DRAW_TILE
+03BC   0BF5           01390     decfsz 0x75, F
+03BD   2BAF           01391     goto  BLINK_LOOP
+03BE   2BC6           01392     goto  END_CHECK
+                      01393 
+03BF                  01394 DO_REVEAL_SAFE:
+03BF   211F           01395     call  REVEAL_TILE
+03C0   21AB           01396     call  CHECK_WIN
+                      01397 
+03C1                  01398 WAIT_RELEASE:
+03C1   23E4           01399     call  DELAY_20MS
+03C2   0806           01400     movf  PORTB, W
+03C3   39FF           01401     andlw b'11111111'
+03C4   1D03           01402     btfss STATUS, Z
+03C5   2BC1           01403     goto  WAIT_RELEASE
+03C6                  01404 END_CHECK:
+03C6   0008           01405     return
+                      01406 
+                      01407 ; =============================================================================
+                      01408 ; DO_RESTART - pełny reset gry bez reinicjalizacji LCD
+                      01409 ; =============================================================================
+03C7                  01410 DO_RESTART:
+03C7                  01411 DR_WAIT:
+03C7   23E4           01412     call  DELAY_20MS
+03C8   1B86           01413     btfsc PORTB, 7
+03C9   2BC7           01414     goto  DR_WAIT
+                      01415 
+                      01416     ; Wyczyść RAM gry
+03CA   3020           01417     movlw 0x20
+03CB   0084           01418     movwf FSR
+03CC                  01419 DR_CLEAR:
+03CC   0180           01420     clrf  INDF
+03CD   0A84           01421     incf  FSR, F
+03CE   302C           01422     movlw 0x2C
+03CF   0204           01423     subwf FSR, W
+03D0   1D03           01424     btfss STATUS, Z
+03D1   2BCC           01425     goto  DR_CLEAR
+                      01426 
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x20}.
+03D2   01A0           01427     clrf  0xA0
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x21}.
+03D3   01A1           01428     clrf  0xA1
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x22}.
+03D4   01A2           01429     clrf  0xA2
+03D5   3007           01430     movlw d'7'
+Message[302]: Register in operand not in bank 0. Ensure that bank bits are correct. Bank_bits = 0x80, register{0x23}.
+03D6   00A3           01431     movwf 0xA3
+gpasm-1.4.0 #1107 (Jan  1 2021)  saper5x5.asm   5-6-2026  10:54:32          PAGE 29
+
+
+LOC    OBJECT CODE    LINE  SOURCE TEXT
+  VALUE
+
+                      01432 
+03D7   3002           01433     movlw d'2'
+03D8   00D0           01434     movwf 0x50
+03D9   00D1           01435     movwf 0x51
+03DA   00D4           01436     movwf 0x54
+03DB   00D5           01437     movwf 0x55
+                      01438 
+03DC   2078           01439     call  PLANT_DUMMY_MINES
+03DD   224E           01440     call  DRAW_GRID
+03DE   21CA           01441     call  DRAW_LEGEND
+                      01442 
+03DF   30FF           01443     movlw 0xFF
+03E0   00E4           01444     movwf 0x64
+03E1   00E5           01445     movwf 0x65
+03E2   228B           01446     call  DRAW_TILE
+03E3   0008           01447     return
+                      01448 
+                      01449 ; =============================================================================
+                      01450 ; DELAY_20MS
+                      01451 ; =============================================================================
+03E4                  01452 DELAY_20MS:
+03E4   3064           01453     movlw d'100'
+03E5   00F0           01454     movwf 0x70
+03E6                  01455 DELAY_OUTER:
+03E6   3042           01456     movlw d'66'
+03E7   00F1           01457     movwf 0x71
+03E8                  01458 DELAY_INNER:
+03E8   0BF1           01459     decfsz 0x71, F
+03E9   2BE8           01460     goto  DELAY_INNER
+03EA   0BF0           01461     decfsz 0x70, F
+03EB   2BE6           01462     goto  DELAY_OUTER
+03EC   0008           01463     return
+                      01464 
+                      01465     END
+gpasm-1.4.0 #1107 (Jan  1 2021)  saper5x5.asm   5-6-2026  10:54:32          PAGE 30
+
+
+SYMBOL TABLE
+  LABEL                             VALUE
+
+ACKDT                             00000005
+ACKEN                             00000004
+ACKSTAT                           00000006
+ADCON0                            0000001F
+ADCON1                            0000009F
+ADCS0                             00000006
+ADCS1                             00000007
+ADCS2                             00000006
+ADDEN                             00000003
+ADFM                              00000007
+ADIE                              00000006
+ADIF                              00000006
+ADON                              00000000
+ADRESH                            0000001E
+ADRESL                            0000009E
+BCLIE                             00000003
+BCLIF                             00000003
+BF                                00000000
+BFS_EAST                          00000167
+BFS_LOOP                          0000013D
+BFS_SOUTH                         00000154
+BFS_TRY_PUSH                      00000172
+BFS_WEST                          0000015E
+BLINK_LOOP                        000003AF
+BRGH                              00000002
+BTP_RESTORE                       000001A6
+C                                 00000000
+C1INV                             00000004
+C1OUT                             00000006
+C2INV                             00000005
+C2OUT                             00000007
+CB_SKIP_RESTART                   00000352
+CCP1CON                           00000017
+CCP1IE                            00000002
+CCP1IF                            00000002
+CCP1M0                            00000000
+CCP1M1                            00000001
+CCP1M2                            00000002
+CCP1M3                            00000003
+CCP1X                             00000005
+CCP1Y                             00000004
+CCP2CON                           0000001D
+CCP2IE                            00000000
+CCP2IF                            00000000
+CCP2M0                            00000000
+CCP2M1                            00000001
+CCP2M2                            00000002
+CCP2M3                            00000003
+CCP2X                             00000005
+CCP2Y                             00000004
+CCPR1                             00000015
+CCPR1H                            00000016
+CCPR1L                            00000015
+gpasm-1.4.0 #1107 (Jan  1 2021)  saper5x5.asm   5-6-2026  10:54:32          PAGE 31
+
+
+SYMBOL TABLE
+  LABEL                             VALUE 
+
+CCPR2                             0000001B
+CCPR2H                            0000001C
+CCPR2L                            0000001B
+CF_DO_BLINK                       0000038E
+CF_DRAW_FLAGGED                   00000385
+CF_DRAW_UNFLAGGED                 0000038A
+CHECK_BUTTONS                     0000034E
+CHECK_DOWN                        00000368
+CHECK_FLAG                        00000377
+CHECK_LEFT                        00000361
+CHECK_MINE_AT                     000000F6
+CHECK_REVEAL_BTN                  00000396
+CHECK_RIGHT                       00000359
+CHECK_UP                          00000370
+CHECK_WIN                         000001AB
+CHS0                              00000003
+CHS1                              00000004
+CHS2                              00000005
+CIS                               00000003
+CKE                               00000006
+CKP                               00000004
+CLEAR_RAM_LOOP                    0000005A
+CM0                               00000000
+CM1                               00000001
+CM2                               00000002
+CMCON                             0000009C
+CMIE                              00000006
+CMIF                              00000006
+CM_CALC_COORD                     000000DA
+CM_LOOP_X                         000000D3
+CM_LOOP_Y                         000000D1
+CM_NEXT_X                         000000EA
+CM_NEXT_Y                         000000EF
+COUNT_MINES                       000000CE
+CREN                              00000004
+CSRC                              00000007
+CVR0                              00000000
+CVR1                              00000001
+CVR2                              00000002
+CVR3                              00000003
+CVRCON                            0000009D
+CVREN                             00000007
+CVROE                             00000006
+CVRR                              00000005
+D                                 00000005
+DATA_ADDRESS                      00000005
+DC                                00000001
+DELAY_20MS                        000003E4
+DELAY_INNER                       000003E8
+DELAY_OUTER                       000003E6
+DL_DRAW_BOX                       0000020B
+DL_LOOP_X                         0000023E
+DL_LOOP_Y                         0000023C
+gpasm-1.4.0 #1107 (Jan  1 2021)  saper5x5.asm   5-6-2026  10:54:32          PAGE 32
+
+
+SYMBOL TABLE
+  LABEL                             VALUE 
+
+DL_WAIT1                          00000241
+DL_WAIT2                          00000246
+DO_RESTART                        000003C7
+DO_REVEAL_SAFE                    000003BF
+DO_UPDATE                         0000026B
+DRAW_GRID                         0000024E
+DRAW_LEGEND                       000001CA
+DRAW_TILE                         0000028B
+DR_CLEAR                          000003CC
+DR_WAIT                           000003C7
+DU_DO_DRAW                        00000281
+DU_DRAW_GREY                      00000275
+DU_DRAW_YELLOW                    0000027A
+DU_WAS_REVEALED                   0000027F
+D_A                               00000005
+D_NOT_A                           00000005
+EEADR                             0000010D
+EEADRH                            0000010F
+EECON1                            0000018C
+EECON2                            0000018D
+EEDATA                            0000010C
+EEDATH                            0000010E
+EEIE                              00000004
+EEIF                              00000004
+EEPGD                             00000007
+END_CHECK                         000003C6
+F                                 00000001
+FERR                              00000002
+FILL_X_INNER                      00000047
+FILL_X_OUTER                      00000045
+FILL_Y                            00000043
+FSR                               00000004
+GAME_INIT                         00000068
+GAME_OVER_LOOP                    00000077
+GCEN                              00000007
+GET_BITMASK_AND_PTR               000000A9
+GET_REVEALED_COLOR                000002DF
+GIE                               00000007
+GO                                00000002
+GO_DONE                           00000002
+GO_NOT_DONE                       00000002
+GRC_0                             00000300
+GRC_1                             00000304
+GRC_2                             00000309
+GRC_3                             0000030E
+GRC_4                             00000313
+GRC_5                             00000318
+GRC_6                             0000031D
+GRC_7                             00000322
+GRC_8                             00000327
+GRID_LOOP_X                       00000250
+GRID_LOOP_Y                       00000252
+GTB_CALC_OFFSET                   000000B4
+gpasm-1.4.0 #1107 (Jan  1 2021)  saper5x5.asm   5-6-2026  10:54:32          PAGE 33
+
+
+SYMBOL TABLE
+  LABEL                             VALUE 
+
+GTB_END                           000000CD
+GTB_LOOP_Y                        000000B0
+GTB_MASK_LOOP                     000000C9
+I2C_DATA                          00000005
+I2C_READ                          00000002
+I2C_START                         00000003
+I2C_STOP                          00000004
+IBF                               00000007
+IBOV                              00000005
+INDF                              00000000
+INTCON                            0000000B
+INTE                              00000004
+INTEDG                            00000006
+INTF                              00000001
+IRP                               00000007
+IS_MINE                           00000113
+IS_REVEALED                       0000010D
+LOOP_RECT_X                       000002CF
+LOOP_RECT_Y                       000002CD
+MAIN_LOOP                         00000071
+MARK_REVEALED                     00000119
+NOT_A                             00000005
+NOT_ADDRESS                       00000005
+NOT_BO                            00000000
+NOT_BOR                           00000000
+NOT_DONE                          00000002
+NOT_PD                            00000003
+NOT_POR                           00000001
+NOT_RBPU                          00000007
+NOT_RC8                           00000006
+NOT_T1SYNC                        00000002
+NOT_TO                            00000004
+NOT_TX8                           00000006
+NOT_W                             00000002
+NOT_WRITE                         00000002
+OBF                               00000006
+OERR                              00000001
+OPTION_REG                        00000081
+P                                 00000004
+PCFG0                             00000000
+PCFG1                             00000001
+PCFG2                             00000002
+PCFG3                             00000003
+PCL                               00000002
+PCLATH                            0000000A
+PCON                              0000008E
+PEIE                              00000006
+PEN                               00000002
+PIE1                              0000008C
+PIE2                              0000008D
+PIR1                              0000000C
+PIR2                              0000000D
+PLANT_DUMMY_MINES                 00000078
+gpasm-1.4.0 #1107 (Jan  1 2021)  saper5x5.asm   5-6-2026  10:54:32          PAGE 34
+
+
+SYMBOL TABLE
+  LABEL                             VALUE 
+
+PORTA                             00000005
+PORTB                             00000006
+PORTC                             00000007
+PORTD                             00000008
+PORTE                             00000009
+PR2                               00000092
+PS0                               00000000
+PS1                               00000001
+PS2                               00000002
+PSA                               00000003
+PSPIE                             00000007
+PSPIF                             00000007
+PSPMODE                           00000004
+R                                 00000002
+RA0                               00000000
+RA1                               00000001
+RA2                               00000002
+RA3                               00000003
+RA4                               00000004
+RA5                               00000005
+RAM_LOOP_X                        0000032E
+RAM_LOOP_Y                        00000330
+RAM_NEXT                          00000338
+RB0                               00000000
+RB1                               00000001
+RB2                               00000002
+RB3                               00000003
+RB4                               00000004
+RB5                               00000005
+RB6                               00000006
+RB7                               00000007
+RBIE                              00000003
+RBIF                              00000000
+RC0                               00000000
+RC1                               00000001
+RC2                               00000002
+RC3                               00000003
+RC4                               00000004
+RC5                               00000005
+RC6                               00000006
+RC7                               00000007
+RC8_9                             00000006
+RC9                               00000006
+RCD8                              00000000
+RCEN                              00000003
+RCIE                              00000005
+RCIF                              00000005
+RCREG                             0000001A
+RCSTA                             00000018
+RD                                00000000
+RD0                               00000000
+RD1                               00000001
+RD2                               00000002
+gpasm-1.4.0 #1107 (Jan  1 2021)  saper5x5.asm   5-6-2026  10:54:32          PAGE 35
+
+
+SYMBOL TABLE
+  LABEL                             VALUE 
+
+RD3                               00000003
+RD4                               00000004
+RD5                               00000005
+RD6                               00000006
+RD7                               00000007
+RE0                               00000000
+RE1                               00000001
+RE2                               00000002
+READ_WRITE                        00000002
+REVEAL_ALL_MINES                  0000032C
+REVEAL_TILE                       0000011F
+RP0                               00000005
+RP1                               00000006
+RSEN                              00000001
+RX9                               00000006
+RX9D                              00000000
+R_NOT_W                           00000002
+R_W                               00000002
+S                                 00000003
+SEN                               00000000
+SEND_CMD                          00000343
+SEND_DAT                          00000346
+SMP                               00000007
+SPBRG                             00000099
+SPEN                              00000007
+SPI_TX                            00000348
+SPI_WAIT                          0000034A
+SREN                              00000005
+SSPADD                            00000093
+SSPBUF                            00000013
+SSPCON                            00000014
+SSPCON2                           00000091
+SSPEN                             00000005
+SSPIE                             00000003
+SSPIF                             00000003
+SSPM0                             00000000
+SSPM1                             00000001
+SSPM2                             00000002
+SSPM3                             00000003
+SSPOV                             00000006
+SSPSTAT                           00000094
+START                             00000005
+STATUS                            00000003
+SYNC                              00000004
+T0CS                              00000005
+T0IE                              00000005
+T0IF                              00000002
+T0SE                              00000004
+T1CKPS0                           00000004
+T1CKPS1                           00000005
+T1CON                             00000010
+T1INSYNC                          00000002
+T1OSCEN                           00000003
+gpasm-1.4.0 #1107 (Jan  1 2021)  saper5x5.asm   5-6-2026  10:54:32          PAGE 36
+
+
+SYMBOL TABLE
+  LABEL                             VALUE 
+
+T1SYNC                            00000002
+T2CKPS0                           00000000
+T2CKPS1                           00000001
+T2CON                             00000012
+TMR0                              00000001
+TMR0IE                            00000005
+TMR0IF                            00000002
+TMR1                              0000000E
+TMR1CS                            00000001
+TMR1H                             0000000F
+TMR1IE                            00000000
+TMR1IF                            00000000
+TMR1L                             0000000E
+TMR1ON                            00000000
+TMR2                              00000011
+TMR2IE                            00000001
+TMR2IF                            00000001
+TMR2ON                            00000002
+TOUTPS0                           00000003
+TOUTPS1                           00000004
+TOUTPS2                           00000005
+TOUTPS3                           00000006
+TRISA                             00000085
+TRISA0                            00000000
+TRISA1                            00000001
+TRISA2                            00000002
+TRISA3                            00000003
+TRISA4                            00000004
+TRISA5                            00000005
+TRISB                             00000086
+TRISB0                            00000000
+TRISB1                            00000001
+TRISB2                            00000002
+TRISB3                            00000003
+TRISB4                            00000004
+TRISB5                            00000005
+TRISB6                            00000006
+TRISB7                            00000007
+TRISC                             00000087
+TRISC0                            00000000
+TRISC1                            00000001
+TRISC2                            00000002
+TRISC3                            00000003
+TRISC4                            00000004
+TRISC5                            00000005
+TRISC6                            00000006
+TRISC7                            00000007
+TRISD                             00000088
+TRISD0                            00000000
+TRISD1                            00000001
+TRISD2                            00000002
+TRISD3                            00000003
+TRISD4                            00000004
+gpasm-1.4.0 #1107 (Jan  1 2021)  saper5x5.asm   5-6-2026  10:54:32          PAGE 37
+
+
+SYMBOL TABLE
+  LABEL                             VALUE 
+
+TRISD5                            00000005
+TRISD6                            00000006
+TRISD7                            00000007
+TRISE                             00000089
+TRISE0                            00000000
+TRISE1                            00000001
+TRISE2                            00000002
+TRMT                              00000001
+TX8_9                             00000006
+TX9                               00000006
+TX9D                              00000000
+TXD8                              00000000
+TXEN                              00000005
+TXIE                              00000004
+TXIF                              00000004
+TXREG                             00000019
+TXSTA                             00000098
+UA                                00000001
+UPDATE_CURSOR                     00000262
+W                                 00000000
+WAIT_C1                           000002D2
+WAIT_C2                           000002D7
+WAIT_H                            0000004A
+WAIT_L                            0000004F
+WAIT_RELEASE                      000003C1
+WCOL                              00000007
+WIN_REVEAL_X                      000001B8
+WIN_REVEAL_Y                      000001BA
+WR                                00000001
+WREN                              00000002
+WRERR                             00000003
+Z                                 00000002
+_BODEN_OFF                        00003FBF
+_BODEN_ON                         00003FFF
+_BOREN_OFF                        00003FBF
+_BOREN_ON                         00003FFF
+_CONFIG                           00002007
+_CPD_OFF                          00003FFF
+_CPD_ON                           00003EFF
+_CP_ALL                           00001FFF
+_CP_OFF                           00003FFF
+_CP_ON                            00001FFF
+_DEBUG_OFF                        00003FFF
+_DEBUG_ON                         000037FF
+_DEVID1                           00002006
+_FOSC_EXTRC                       00003FFF
+_FOSC_HS                          00003FFE
+_FOSC_LP                          00003FFC
+_FOSC_XT                          00003FFD
+_HS_OSC                           00003FFE
+_IDLOC0                           00002000
+_IDLOC1                           00002001
+_IDLOC2                           00002002
+gpasm-1.4.0 #1107 (Jan  1 2021)  saper5x5.asm   5-6-2026  10:54:32          PAGE 38
+
+
+SYMBOL TABLE
+  LABEL                             VALUE 
+
+_IDLOC3                           00002003
+_LP_OSC                           00003FFC
+_LVP_OFF                          00003F7F
+_LVP_ON                           00003FFF
+_PWRTE_OFF                        00003FFF
+_PWRTE_ON                         00003FF7
+_RC_OSC                           00003FFF
+_WDTE_OFF                         00003FFB
+_WDTE_ON                          00003FFF
+_WDT_OFF                          00003FFB
+_WDT_ON                           00003FFF
+_WRT_1FOURTH                      00003BFF
+_WRT_256                          00003DFF
+_WRT_HALF                         000039FF
+_WRT_OFF                          00003FFF
+_XT_OSC                           00003FFD
+__16F877A                         00000001
+__CODE_END                        00001FFF
+__CODE_START                      00000000
+__COMMON_RAM_END                  0000007F
+__COMMON_RAM_START                00000070
+__EEPROM_END                      000021FF
+__EEPROM_START                    00002100
+__VECTOR_INT                      00000004
+__VECTOR_RESET                    00000000
+
+
+MEMORY USAGE MAP ('X' = Used,  '-' = Unused)
+
+0000 : X----XXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX
+0040 : XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX
+0080 : XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX
+00C0 : XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX
+0100 : XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX
+0140 : XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX
+0180 : XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX
+01C0 : XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX
+0200 : XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX
+0240 : XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX
+0280 : XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX
+02C0 : XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX
+0300 : XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX
+0340 : XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX
+0380 : XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX
+03C0 : XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXX--- ----------------
+2000 : -------X-------- ---------------- ---------------- ----------------
+
+All other memory blocks unused.
+
+Program Memory Words Used:  1001
+Program Memory Words Free:  7191
+
+
+gpasm-1.4.0 #1107 (Jan  1 2021)  saper5x5.asm   5-6-2026  10:54:32          PAGE 39
+
+
+
+
+Errors   :     0
+Warnings :     1 reported,     0 suppressed
+Messages :    42 reported,     0 suppressed
+
+
