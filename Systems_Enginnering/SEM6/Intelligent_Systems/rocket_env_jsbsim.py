@@ -45,7 +45,7 @@ class RocketAeroJSBSimEnv(gym.Env):
         dt: float = 0.002,                 # UPDATED: 500Hz control frequency
         max_altitude_m: float = 25_000.0,  # UPDATED: Goal lowered to 25 km
         thrust_n: float = 1000.0,          
-        burn_time_s: float = 90.0,         # UPDATED: Reduced burn time to cap apogee at ~32km
+        burn_time_s: float = 60.0,         # UPDATED: Reduced burn time to cap apogee at ~32km
         wind_speed_mps: float = 0.0,      
         wind_turbulence: bool = False,
         render_mode: Optional[str] = None,
@@ -277,7 +277,7 @@ class RocketAeroJSBSimEnv(gym.Env):
             [tilt_x, tilt_y, roll_unused, p, q, r, h_m / 1000.0, v_up],
             dtype=np.float32,
         )
-
+    """
     def _compute_reward(self, action: np.ndarray) -> float:
         tilt_x, tilt_y, _roll_unused, p, q, r, h_km, v_up = self._get_obs()
         tilt_sq = tilt_x**2 + tilt_y**2
@@ -300,7 +300,7 @@ class RocketAeroJSBSimEnv(gym.Env):
         # 3. Bumped Velocity/Altitude Bonus
         # Increased the multipliers to strongly prioritize flying upwards.
         # This makes pushing vertically through the atmosphere highly lucrative.
-        r_alt_flat = 0.02 * max(v_up, 0.0) 
+        r_alt_flat = 0.03 * max(v_up, 0.0) 
         r_alt = 0.2 * math.tanh(max(v_up, 0.0) / 100.0)
         
         # 4. Mild Control/Rate Penalties
@@ -308,12 +308,28 @@ class RocketAeroJSBSimEnv(gym.Env):
         r_ctrl = -0.001 * float(np.sum(action**2))
         
         return float(r_survive + r_att + r_alt + r_alt_flat + r_rate + r_ctrl)
+    """
+
+    def _compute_reward(self, action: np.ndarray) -> float:
+        tilt_x, tilt_y, _roll_unused, p, q, r, h_km, v_up = self._get_obs()
+        
+        # 1. Constant Survival Income
+        # We keep this strictly positive so the agent always wants to prolong the episode.
+        r_survive = 1.0 
+        
+        # 2. Bounded Velocity/Altitude Income
+        # Bounded to +1.0 so it cannot overpower the survival imperative.
+        r_alt = 1.0 * math.tanh(max(v_up, 0.0) / 100.0)
+        
+        # No attitude bonus, no rate penalty, no control penalty.
+        return float(r_survive + r_alt)
 
     def _is_terminated(self, obs: np.ndarray) -> bool:
         tilt_x, tilt_y, _roll_unused, p, q, r, h_km, v_up = obs
         tilt_mag = math.sqrt(tilt_x**2 + tilt_y**2)
 
-        if tilt_mag > math.sin(math.radians(35)):
+        # STRONGER TERMINATION: Kill the episode immediately at 15 degrees
+        if tilt_mag > math.sin(math.radians(15)):
             return True
         if max(abs(p), abs(q), abs(r)) > math.radians(720):
             return True
@@ -321,8 +337,8 @@ class RocketAeroJSBSimEnv(gym.Env):
             return True
         return False
 
-def register_env():
-    gym.register(
+    def register_env():
+        gym.register(
         id="RocketJSBSim-v0",
         entry_point=f"{__name__}:RocketAeroJSBSimEnv",
         # UPDATED: Scale max steps to fit 500Hz (dt=0.002) for a 120s flight

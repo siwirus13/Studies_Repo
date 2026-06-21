@@ -53,29 +53,29 @@ class Phase:
 PHASES = [
     Phase(
         name        = "Phase 1 — calm air",
-        timesteps   = 5_000_000,
+        timesteps   = 2_000_000,
         wind_mps    = 0.0,
         turbulence  = False,
         ic_perturb  = 0.05,     # small: ±0.05 rad ≈ ±3°
-        ent_coef    = 0.03,     
+        ent_coef    = 0.02,     
         description = "No wind. Learn basic 'stay upright' reflex.",
     ),
     Phase(
         name        = "Phase 2 — steady crosswind",
-        timesteps   = 3_000_000,
+        timesteps   = 5_000_000,
         wind_mps    = 5.0,
-        turbulence  = False,
+        turbulence  = True,
         ic_perturb  = 0.08,
-        ent_coef    = 0.01,     # moderate entropy
+        ent_coef    = 0.02,     # moderate entropy
         description = "Steady 5 m/s crosswind. Learn to hold attitude against a constant push.",
     ),
     Phase(
         name        = "Phase 3 — wind + turbulence",
-        timesteps   = 3_000_000,
+        timesteps   = 4_000_000,
         wind_mps    = 10.0,
         turbulence  = True,
         ic_perturb  = 0.10,
-        ent_coef    = 0.005,     # lower — start converging
+        ent_coef    = 0.01,     # lower — start converging
         description = "Full 10 m/s wind + Dryden turbulence. Handle dynamic gusts.",
     ),
     Phase(
@@ -84,7 +84,7 @@ PHASES = [
         wind_mps    = 15.0,
         turbulence  = True,
         ic_perturb  = 0.15,     # larger: ±0.15 rad ≈ ±9°
-        ent_coef    = 0.001,     # tight — refine
+        ent_coef    = 0.003,     # tight — refine
         description = "Max wind, larger perturbations. Robustness hardening.",
     ),
 ]
