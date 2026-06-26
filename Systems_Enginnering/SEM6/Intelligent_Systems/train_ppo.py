@@ -52,43 +52,33 @@ class Phase:
 
 PHASES = [
     Phase(
-        name        = "Phase 1 — calm air",
-        timesteps   = 2_000_000,
-        wind_mps    = 0.0,
-        turbulence  = False,
-        ic_perturb  = 0.05,     # small: ±0.05 rad ≈ ±3°
-        ent_coef    = 0.02,     
-        description = "No wind. Learn basic 'stay upright' reflex.",
-    ),
-    Phase(
-        name        = "Phase 2 — steady crosswind",
-        timesteps   = 5_000_000,
+        name        = "Phase 1 — steady crosswind",
+        timesteps   = 4_000_000,
         wind_mps    = 5.0,
         turbulence  = True,
-        ic_perturb  = 0.08,
-        ent_coef    = 0.02,     # moderate entropy
-        description = "Steady 5 m/s crosswind. Learn to hold attitude against a constant push.",
+        ic_perturb  = 0.05,
+        ent_coef    = 0.02, # Start tighter since wind forces immediate adjustments
+        description = "Steady 5 m/s crosswind. Learn to counter continuous drift.",
     ),
     Phase(
-        name        = "Phase 3 — wind + turbulence",
-        timesteps   = 4_000_000,
+        name        = "Phase 2 — wind + turbulence",
+        timesteps   = 3_000_000,
         wind_mps    = 10.0,
         turbulence  = True,
-        ic_perturb  = 0.10,
-        ent_coef    = 0.01,     # lower — start converging
-        description = "Full 10 m/s wind + Dryden turbulence. Handle dynamic gusts.",
+        ic_perturb  = 0.08,
+        ent_coef    = 0.01,
+        description = "10 m/s wind + Dryden turbulence. Damping structural oscillations.",
     ),
     Phase(
-        name        = "Phase 4 — full chaos",
-        timesteps   = 2_000_000,
+        name        = "Phase 3 — full chaos",
+        timesteps   = 2_500_000,
         wind_mps    = 15.0,
         turbulence  = True,
-        ic_perturb  = 0.15,     # larger: ±0.15 rad ≈ ±9°
-        ent_coef    = 0.003,     # tight — refine
-        description = "Max wind, larger perturbations. Robustness hardening.",
+        ic_perturb  = 0.12,
+        ent_coef    = 0.002,
+        description = "Max structural survival validation.",
     ),
 ]
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Progress callback
@@ -336,10 +326,10 @@ def main():
                     env,
                     verbose=0,
                     tensorboard_log=args.logdir,
-                    n_steps=1024,
-                    batch_size=128,
+                    n_steps=2048,
+                    batch_size=256,
                     learning_rate=lr_schedule,
-                    gamma=0.999,
+                    gamma=0.995,
                     gae_lambda=0.95,
                     clip_range=0.2,
                     ent_coef=phase.ent_coef,
@@ -355,10 +345,10 @@ def main():
                     env,
                     verbose=0,          
                     tensorboard_log=args.logdir,
-                    n_steps=1024,
-                    batch_size=128,
+                    n_steps=2048,
+                    batch_size=256,
                     learning_rate=lr_schedule,
-                    gamma=0.999,
+                    gamma=0.995,
                     gae_lambda=0.95,
                     clip_range=0.2,
                     ent_coef=phase.ent_coef,

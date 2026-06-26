@@ -97,7 +97,7 @@
             </summer>            
             <pure_gain name="fcs/elevator-pos-rad">                
                 <input>fcs/pitch-sum</input>                
-                <gain>0.349</gain>  <output>fcs/elevator-pos-rad</output>            
+                <gain>0.6109</gain>  <output>fcs/elevator-pos-rad</output>            
             </pure_gain>        
         </channel>        
 

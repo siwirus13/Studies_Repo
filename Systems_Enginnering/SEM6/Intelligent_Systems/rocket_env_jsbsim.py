@@ -41,8 +41,7 @@ class RocketAeroJSBSimEnv(gym.Env):
 
     def __init__(
         self,
-        aircraft_dir: Optional[str] = None,
-        dt: float = 0.002,                 # UPDATED: 500Hz control frequency
+        aircraft_dir: Optional[str] = None,          
         max_altitude_m: float = 25_000.0,  # UPDATED: Goal lowered to 25 km
         thrust_n: float = 1000.0,          
         burn_time_s: float = 60.0,         # UPDATED: Reduced burn time to cap apogee at ~32km
@@ -60,7 +59,6 @@ class RocketAeroJSBSimEnv(gym.Env):
         self.aircraft_dir = aircraft_dir
         self.jsbsim_root  = jsbsim.get_default_root_dir()
 
-        self.dt              = dt
         self.max_altitude_m  = max_altitude_m
         self.thrust_lbf      = thrust_n * N_TO_LBF
         self.burn_time_s     = burn_time_s
@@ -68,6 +66,9 @@ class RocketAeroJSBSimEnv(gym.Env):
         self.wind_turbulence = wind_turbulence
         self.render_mode     = render_mode
         self.debug           = debug
+        self.physics_dt      = 0.001
+        self.frame_skip      = 2
+        self.dt              = self.physics_dt * self.frame_skip
 
         self._fdm: Optional[jsbsim.FGFDMExec] = None
 
@@ -119,18 +120,13 @@ class RocketAeroJSBSimEnv(gym.Env):
 
         return self._get_obs(), {}
 
-    def step(
-        self, action: np.ndarray
-    ) -> Tuple[np.ndarray, float, bool, bool, Dict]:
-        
+    def step(self, action: np.ndarray) -> Tuple[np.ndarray, float, bool, bool, Dict]:
         action = np.clip(action, -1.0, 1.0).astype(np.float64)
-
-        # Get current velocity before applying actions
         v_dn_current = float(self._fdm.get_property_value(self._PROP_VDOWN_FPS))
         v_up_ms = -v_dn_current * FPS_TO_MPS
 
-        # 1. Canard Lockout: Prevent movement until 50 m/s
-        if v_up_ms < 50.0:
+        # Canard Lockout
+        if v_up_ms < 400.0: #change to 400 for free run 
             action = np.zeros(3, dtype=np.float64)
 
         self._fdm.set_property_value(self._PROP_ELEV,    float(action[0]))
@@ -141,33 +137,31 @@ class RocketAeroJSBSimEnv(gym.Env):
         thrust = self.thrust_lbf if t < self.burn_time_s else 0.0
         self._fdm.set_property_value(self._PROP_THRUST_MAG, thrust)
 
-        # 2. Rail Physics: Hard-lock the rocket while on the rail
-        # We will assume it clears the rail at 30 m/s
-        if v_up_ms < 40.0:
-            self._fdm.set_property_value(self._PROP_WIND_N, 0.0)
-            self._fdm.set_property_value(self._PROP_WIND_E, 0.0)
-            self.rail_cleared = False
-            
-            # OVERRIDE JSBSIM INTEGRATION: Force attitude and rates to stay perfectly vertical
-            self._fdm.set_property_value(self._PROP_ROLL_RAD,  0.0)
-            self._fdm.set_property_value(self._PROP_PITCH_RAD, math.pi / 2.0)
-            self._fdm.set_property_value(self._PROP_YAW_RAD,   0.0)
-            self._fdm.set_property_value(self._PROP_P, 0.0)
-            self._fdm.set_property_value(self._PROP_Q, 0.0)
-            self._fdm.set_property_value(self._PROP_R, 0.0)
-            
-        else:
-            if not self.rail_cleared:
-                self._fdm.set_property_value(self._PROP_WIND_N, self.nominal_wind_n)
-                self._fdm.set_property_value(self._PROP_WIND_E, self.nominal_wind_e)
-                self.rail_cleared = True
-            
-            if self.wind_turbulence:
-                self._update_turbulence()
+        # Rail Physics and Environment Stepping
+        for _ in range(self.frame_skip):
+            if v_up_ms < 40.0:
+                self._fdm.set_property_value(self._PROP_WIND_N, 0.0)
+                self._fdm.set_property_value(self._PROP_WIND_E, 0.0)
+                self.rail_cleared = False
+                
+                # Force perfect vertical alignment while on rail
+                self._fdm.set_property_value(self._PROP_ROLL_RAD,  0.0)
+                self._fdm.set_property_value(self._PROP_PITCH_RAD, math.pi / 2.0)
+                self._fdm.set_property_value(self._PROP_YAW_RAD,   0.0)
+                self._fdm.set_property_value(self._PROP_P, 0.0)
+                self._fdm.set_property_value(self._PROP_Q, 0.0)
+                self._fdm.set_property_value(self._PROP_R, 0.0)
+            else:
+                if not self.rail_cleared:
+                    self._fdm.set_property_value(self._PROP_WIND_N, self.nominal_wind_n)
+                    self._fdm.set_property_value(self._PROP_WIND_E, self.nominal_wind_e)
+                    self.rail_cleared = True
+                if self.wind_turbulence:
+                    self._update_turbulence()
 
-        # Step the simulation forward
-        self._fdm.run()
+            self._fdm.run()  # Run a single 500Hz physics iteration
 
+        # Gathering observations after the full 50Hz window macro-step
         obs        = self._get_obs()
         reward     = self._compute_reward(action)
         terminated = self._is_terminated(obs)
@@ -313,16 +307,26 @@ class RocketAeroJSBSimEnv(gym.Env):
     def _compute_reward(self, action: np.ndarray) -> float:
         tilt_x, tilt_y, _roll_unused, p, q, r, h_km, v_up = self._get_obs()
         
-        # 1. Constant Survival Income
-        # We keep this strictly positive so the agent always wants to prolong the episode.
-        r_survive = 1.0 
+        tilt_mag = math.sqrt(tilt_x**2 + tilt_y**2)
+        tilt_deg = math.degrees(math.asin(min(1.0, tilt_mag)))
         
-        # 2. Bounded Velocity/Altitude Income
-        # Bounded to +1.0 so it cannot overpower the survival imperative.
-        r_alt = 1.0 * math.tanh(max(v_up, 0.0) / 100.0)
+        # 1. Survival baseline
+        r_survive = 0.5  
         
-        # No attitude bonus, no rate penalty, no control penalty.
-        return float(r_survive + r_alt)
+        # 2. Tight Gaussian distribution centered around vertical alignment.
+        # At 0° tilt -> 1.0 reward. At 5° tilt -> ~0.70 reward. At 12° tilt -> ~0.10 reward.
+        r_att = math.exp(-0.015 * (tilt_deg ** 2))
+        
+        # 3. Velocity tracking (Keeps performance prioritized upward)
+        r_alt = 0.3 * math.tanh(max(v_up, 0.0) / 100.0)
+        
+        # 4. Strict Quadratic Action Penalties (Drives unneeded inputs to exactly 0.0)
+        r_ctrl = -0.15 * float(np.sum(action ** 2))
+        
+        # 5. Angular Rate Damping (Stops the rocket from shaking/hunting for center)
+        r_rate = -0.01 * float(p**2 + q**2 + r**2)
+        
+        return float(r_survive + r_att + r_alt + r_ctrl + r_rate)
 
     def _is_terminated(self, obs: np.ndarray) -> bool:
         tilt_x, tilt_y, _roll_unused, p, q, r, h_km, v_up = obs

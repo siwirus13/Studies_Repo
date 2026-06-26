@@ -279,7 +279,7 @@ def plot_3d(log, save_path=None, arrow_every=50, phase=4, wind=0.0, turb=False, 
 # 2. 2-D Telemetry Plot
 # ─────────────────────────────────────────────────────────────────────────────
 
-def plot_flight(log, save_path=None, target_alt_km=25.0, phase=4, wind=0.0, turb=False):
+def plot_flight(log, save_path=None, target_alt_km=25.0, phase=2, wind=0.0, turb=False):
     fig, axes = plt.subplots(5, 1, figsize=(10, 14), sharex=True)
     
     fig.suptitle(
@@ -385,10 +385,9 @@ def main():
 
     # Define the physics parameters for each phase curriculum
     phase_configs = {
-        1: {"wind": 0.0,  "turb": False},
-        2: {"wind": 5.0,  "turb": False},
-        3: {"wind": 10.0, "turb": True},
-        4: {"wind": 15.0, "turb": True},
+        1: {"wind": 5.0,  "turb": False},
+        2: {"wind": 10.0,  "turb": True},
+        3: {"wind": 15.0, "turb": True},
     }
     
     cfg = phase_configs[args.phase]
